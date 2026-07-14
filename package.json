@@ -15,6 +15,30 @@
     "requires": {
       "[development]": {
         "db": "sqlite"
+      },
+      "auth": {
+        "kind": "mocked",
+        "users": {
+          "100001": {
+            "password": "dev",
+            "roles": [
+              "authenticated-user"
+            ]
+          },
+          "100002": {
+            "password": "dev",
+            "roles": [
+              "authenticated-user"
+            ]
+          },
+          "admin": {
+            "password": "admin",
+            "roles": [
+              "authenticated-user",
+              "admin"
+            ]
+          }
+        }
       }
     }
   }
