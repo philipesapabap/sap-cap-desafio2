@@ -11,7 +11,8 @@
   },
   "scripts": {
     "start": "cds-serve",
-    "watch-ordens": "cds watch --open treinamento.cap.ordens/index.html?sap-ui-xx-viewCache=false --livereload false"
+    "watch-ordens": "cds watch --open treinamento.cap.ordens/index.html?sap-ui-xx-viewCache=false --livereload false",
+    "watch-lotes": "cds watch --open treinamento.cap.lotes/index.html?sap-ui-xx-viewCache=false --livereload false"
   },
   "private": true,
   "cds": {
@@ -52,6 +53,7 @@
     "app/*"
   ],
   "sapux": [
-    "app/ordens"
+    "app/ordens",
+    "app/lotes"
   ]
 }

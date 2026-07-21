@@ -1,0 +1,183 @@
+{
+  "_version": "1.85.0",
+  "sap.app": {
+    "id": "treinamento.cap.lotes",
+    "type": "application",
+    "i18n": "i18n/i18n.properties",
+    "applicationVersion": {
+      "version": "0.0.1"
+    },
+    "title": "{{appTitle}}",
+    "description": "{{appDescription}}",
+    "resources": "resources.json",
+    "sourceTemplate": {
+      "id": "@sap/generator-fiori:lrop",
+      "version": "1.27.0",
+      "toolsId": "cb044f5d-faef-4070-a5d7-4fe5ddf4418e"
+    },
+    "dataSources": {
+      "mainService": {
+        "uri": "/planejamento/",
+        "type": "OData",
+        "settings": {
+          "annotations": [],
+          "odataVersion": "4.0"
+        }
+      }
+    },
+    "crossNavigation": {
+      "inbounds": {
+        "LotesLiberacao-Display": {
+          "semanticObject": "LotesLiberacao",
+          "action": "Display",
+          "title": "{{LotesLiberacao-Display.flpTitle}}",
+          "subTitle": "{{LotesLiberacao-Display.flpSubtitle}}",
+          "signature": {
+            "parameters": {},
+            "additionalParameters": "allowed"
+          }
+        }
+      }
+    }
+  },
+  "sap.ui": {
+    "technology": "UI5",
+    "icons": {
+      "icon": "",
+      "favIcon": "",
+      "phone": "",
+      "phone@2": "",
+      "tablet": "",
+      "tablet@2": ""
+    },
+    "deviceTypes": {
+      "desktop": true,
+      "tablet": true,
+      "phone": true
+    }
+  },
+  "sap.ui5": {
+    "flexEnabled": true,
+    "dependencies": {
+      "minUI5Version": "1.149.1",
+      "libs": {
+        "sap.m": {},
+        "sap.ui.core": {},
+        "sap.fe.templates": {}
+      }
+    },
+    "contentDensities": {
+      "compact": true,
+      "cozy": true
+    },
+    "models": {
+      "i18n": {
+        "type": "sap.ui.model.resource.ResourceModel",
+        "settings": {
+          "bundleName": "treinamento.cap.lotes.i18n.i18n"
+        }
+      },
+      "": {
+        "dataSource": "mainService",
+        "preload": true,
+        "settings": {
+          "operationMode": "Server",
+          "autoExpandSelect": true,
+          "earlyRequests": true
+        }
+      },
+      "@i18n": {
+        "type": "sap.ui.model.resource.ResourceModel",
+        "uri": "i18n/i18n.properties"
+      }
+    },
+    "resources": {
+      "css": []
+    },
+    "routing": {
+      "config": {},
+      "routes": [
+        {
+          "pattern": ":?query:",
+          "name": "LotesLiberacaoList",
+          "target": "LotesLiberacaoList"
+        },
+        {
+          "pattern": "LotesLiberacao({key}):?query:",
+          "name": "LotesLiberacaoObjectPage",
+          "target": "LotesLiberacaoObjectPage"
+        },
+        {
+          "pattern": "LotesLiberacao({key})/itens({key2}):?query:",
+          "name": "ItensLoteLiberacaoObjectPage",
+          "target": "ItensLoteLiberacaoObjectPage"
+        }
+      ],
+      "targets": {
+        "LotesLiberacaoList": {
+          "type": "Component",
+          "id": "LotesLiberacaoList",
+          "name": "sap.fe.templates.ListReport",
+          "options": {
+            "settings": {
+              "contextPath": "/LotesLiberacao",
+              "variantManagement": "Page",
+              "navigation": {
+                "LotesLiberacao": {
+                  "detail": {
+                    "route": "LotesLiberacaoObjectPage"
+                  }
+                }
+              },
+              "controlConfiguration": {
+                "@com.sap.vocabularies.UI.v1.LineItem": {
+                  "tableSettings": {
+                    "type": "ResponsiveTable"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "LotesLiberacaoObjectPage": {
+          "type": "Component",
+          "id": "LotesLiberacaoObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": {
+            "settings": {
+              "editableHeaderContent": false,
+              "contextPath": "/LotesLiberacao",
+              "navigation": {
+                "itens": {
+                  "detail": {
+                    "route": "ItensLoteLiberacaoObjectPage"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "ItensLoteLiberacaoObjectPage": {
+          "type": "Component",
+          "id": "ItensLoteLiberacaoObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": {
+            "settings": {
+              "editableHeaderContent": false,
+              "contextPath": "/LotesLiberacao/itens"
+            }
+          }
+        }
+      }
+    }
+  },
+  "sap.fiori": {
+    "registrationIds": [],
+    "archeType": "transactional"
+  },
+  "sap.fe": {
+    "app": {
+      "enableLazyLoading": true
+    }
+  }
+}
