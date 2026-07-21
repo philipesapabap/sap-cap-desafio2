@@ -1,0 +1,46 @@
+
+@host = http://localhost:4004
+@service = {{host}}/odata/v4/planejamento
+@authUser = 100001
+@authPass = dev
+@ordemID = f1111111-1111-1111-1111-111111111111
+@loteID  = a1111111-1111-1111-1111-111111111111
+
+### Metadata
+GET {{service}}/$metadata
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Lista com escopo do usuário
+GET {{service}}/Ordens?$select=ID,codigo,status_code,responsavel_matricula&$top=20
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Lista com filtro virtual convertido em EXISTS
+GET {{service}}/Ordens?$filter=comRiscoEstoque eq true&$select=ID,codigo,status_code
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Ordem por ID
+GET {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Liberar ordem
+POST {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)/liberarOrdem
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{}
+
+### Cancelar ordem
+POST {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)/cancelarOrdem
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{
+  "motivo": "Cancelamento de teste local"
+}
+
+### Processar lote
+POST {{service}}/LotesLiberacao(ID={{loteID}},IsActiveEntity=true)/processarLote
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{}
