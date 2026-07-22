@@ -2,7 +2,7 @@
   "name": "desafio2",
   "version": "1.0.0",
   "dependencies": {
-    "@cap-js/hana": "^2.8.0",
+    "@cap-js/hana": "^2",
     "@sap/cds": "^9"
   },
   "devDependencies": {
