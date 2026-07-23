@@ -22,7 +22,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     this.before("SAVE", Ordens, this.validarOrdemAntesDeSalvar);
 
     this.on("liberarOrdem", Ordens, this.onliberarOrdem);
-    this.on("cancelarOrdem", Ordens, this.cancelarOrdem);
+    this.on("cancelarOrdem", Ordens, this.oncancelarOrdem);
     this.on("processarLote", LotesLiberacao, this.processarLote);
 
     return super.init();
@@ -463,7 +463,43 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     });
   }
 
-  async cancelarOrdem(req) {}
+  async oncancelarOrdem(req) {
+    const { ID } = req.params[0];
+
+    //Declaração explícita
+    //Crie a variável motivo e atribua a propriedade motivo de req.data.
+    //const motivo = req.data.motivo;
+    //ou
+    //const { motivo } = req.data;
+    //Desestruturação
+    //Retire a propriedade motivo do objeto req.data e crie uma variável com o mesmo nome.
+    //Nesse contexto, não usarei desestruturação porque quero aplicar o método trim()
+    //Este método não é aplicado ao objeto mas sim a strings.
+    const motivo = req.data?.motivo?.trim();
+
+    await this.cancelarOrdemPorID(ID, motivo, req);
+
+    return SELECT.one.from(this.entities.Ordens).where({ ID });
+  }
+
+  async cancelarOrdemPorID(ID, motivo, req) {
+    const { Ordens } = this.entities;
+
+    const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
+
+    //Se não existir, encerra a requisição com HTTP 404
+    if (!ordem) req.reject(404, "Ordem não encontrada");
+
+    //Se a ordem não estiver "aberta" a liberação é interrompida
+    if (ordem.status_code !== "ABERTA")
+      req.reject(409, `Ordem ${ordem.codigo} não está aberta`);
+
+    //Atualiza o status da ordem
+    await UPDATE(Ordens, ID).with({
+      status_code: "CANCELADA",
+      observacao: `Motivo do cancelamento: ${motivo}`,
+    });
+  }
 
   async processarLote(req) {}
 };

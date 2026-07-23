@@ -12,8 +12,19 @@ service PlanejamentoService @(
             virtual comRiscoEstoque : Boolean @title: 'Risco de Estoque'
         }
         actions {
-            action liberarOrdem()                     returns Ordens;
-            action cancelarOrdem(motivo: String(255)) returns Ordens;
+            @Common.SideEffects: {
+                TargetProperties: ['in/status_code'],
+                TargetEntities  : [in.status]
+            }
+            action liberarOrdem()                                                                returns Ordens;
+            @Common.SideEffects: {
+                TargetProperties: [
+                    'in/status_code',
+                    'in/observacao',
+                ],
+                TargetEntities  : [in.status]
+            }
+            action cancelarOrdem(motivo: String(255) not null @title: 'Motivo do cancelamento' ) returns Ordens;
         };
 
     entity ReservasMateriais      as projection on db.ReservasMateriais;
