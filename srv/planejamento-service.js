@@ -204,7 +204,9 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const valorEsquerda = this.obterValorBooleano(esquerda);
     if (this.ehRefCampo(direita, campo) && valorEsquerda !== undefined) {
       return {
-        valor: this.ehOperadorNegacao(operador) ? !valorEsquerda : valorEsquerda,
+        valor: this.ehOperadorNegacao(operador)
+          ? !valorEsquerda
+          : valorEsquerda,
       };
     }
   }
@@ -313,7 +315,153 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     await this.validarPeriodoDaOrdem(req);
   }
 
-  async liberarOrdem(req) {}
+  async liberarOrdem(req) {
+    //Obtém o ID da ordem a partir da URL da requisição
+    const { ID } = req.params[0];
+    //Delega a lógica principal ao método abaixo
+    //O await é importante porque a consulta final só deve acontecer depois do processamento principal
+    //Que consiste em:
+    // Reservar os estoques;
+    // Inserir os movimentos; e
+    // Atualizar o status.
+    await this.liberarOrdemPorID(ID, req);
+    //Depois da liberação, consulta novamente a ordem
+    //Isso devolve ao frontend a ordem já com o status_code: "Liberada"
+    return SELECT.one.from(this.entities.Ordens).where({ ID });
+  }
+
+  async liberarOrdemPorID(ID, req) {
+    //Traz as entidades expostas pelo PlanejamentoService
+    //Tanto este, como o comando abaixo, buscam definições
+    //A diferença está onde vamos buscar
+    //Ordens e ReservasMateriais possuem exposições sendo feita pelo serviço(planejamento-service.cds)
+    //Por isso o uso do this, poque este serviço, na pasta .cds, expões as entidades
+    //O que não acontece com Ordens e ReservasMateriais
+    //Ambas as declarações poderiam retirar as definições(usar a referência) vinda de cds.entites()
+    //Contudo, a diferença é que a entidade de serviço pode ter caracteristicas adicionais, não previstas,
+    //nem possíveis na cada de persitência(schema.cds)
+    //Por exemplo, campos virtuais, como o usado na entidade Ordens, eles não definidos/declarados na
+    // camada de serviço e não na de persistência
+    // Poderiamos expor Estoques e MovimentosEstoque na camada de serviço? Sim!
+    //Mas então possívelmente seriam acessíveis pela API e talvez não fosse desejado.
+    //Estoques e MovimentosEstoque são detalhes internos da regra de liberação.
+    //Portanto acessá-las pelo modelo de domínio permite usá-las internamente sem necessariamente
+    //expô-las aos clientes.
+    const { Ordens, ReservasMateriais } = this.entities;
+    //Já aqui é diferente.
+    //Primeiro o CAP procura as entidades declaradas dentro do namespace desafio.ordens
+    //Depois o JS retira duas dessas entidades e cria variáveis com os mesmos nomes.
+    // cds.entitoes pede ao CAP:
+    // "Entregue as definições das entidades que pertencem ao namespace desafio.ordens"
+    //OBS: Essas definições representama ESTRUTURA das entidades. Elas não são os registros
+    //armazenados no banco.
+    //Ja a parte do JS const { Est, Movi} aplica o conceito de desestruturação de objeto
+    /*     Sem a desestruturação seria algo como
+        
+        const entidades = cds.entities("desafio.ordens");
+
+        const Estoques = entidades.Estoques;
+        const MovimentosEstoque = entidades.MovimentosEstoque;
+
+    */
+    //     PARA QUE SERVEM AS VARIÁVEIS CRIADAS?
+    // Para que quando precisarmos fazer consultas ou alterações no banco,
+    // o CAP tenha a referência(como um mapa ou a planta de uma casa)
+    // Então quando dizemos: const estoque = await SELECT.one.from(Estoques).where({ ID });
+    //Estamos dizendo: Usa essa planta(Estoques) como referência(que é do tipo entidades.Estoques)
+    //  e efetivamente busca um registro no banco
+    const { Estoques, MovimentosEstoque } = cds.entities("desafio.ordens");
+    /*
+    Em resumo:
+
+        this.entities
+        -> Quero a entidade conforme ela foi exposta e configurada neste serviço.
+        cds.entities("desafio.ordens")
+        -> Quero a entidade original definida neste namespace do modelo de domínio.
+
+    */
+
+    //Busca e bloqueia a ordem
+    //O forUpdate() solicita um bloqueio exclusivo sobre os registros encontrados.
+    //Ou seja, o forUpdate não realiza uma "nova consulta", apenas "modifica" o Select para que
+    //a consulta seja realiza com bloqueio
+    //O select Lê e Bloqueia. Isso é importante porque não existe GAP ou intervalo desprotegido
+    //entre Ler e Bloquear. Isso protege, nesse contexto,
+    //  contra liberação(e tudo que envolve essa liberacao) duplicada da ordem
+    //O bloqueio dura até o encessamento da transação que o adquiriu(Depois do Commit/Rollback)
+    const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
+
+    //Se não existir, encerra a requisição com HTTP 404
+    if (!ordem) req.reject(404, "Ordem não encontrada");
+
+    //Se a ordem não estiver "aberta" a liberação é interrompida
+    if (ordem.status_code !== "ABERTA")
+      req.reject(409, `Ordem ${ordem.codigo} não está aberta`);
+
+    //Busca as reservas da ordem
+    const reservas = await SELECT.from(ReservasMateriais).where({
+      ordem_ID: ID,
+    });
+
+    //Se não houver reserva a liberação é interrompida
+    if (!reservas.length)
+      req.reject(409, `Ordem ${ordem.codigo} não possui reservas`);
+
+    //Loop para processamento de cada reserva
+    //Para cada ordem(loop), o código busca(selet) o estoque correspondente ao material e depósito
+    for (const reserva of reservas) {
+      //Ao encontrar a combinação Material + Depósito
+      // o estoque é bloqueado exclusivamente para este procssamento
+      //Protege o saldo contra consumo concorrente por ordens diferentes
+      const estoque = await SELECT.one
+        .from(Estoques)
+        .where({
+          material_ID: reserva.material_ID,
+          deposito_ID: reserva.deposito_ID,
+        })
+        .forUpdate();
+
+      //Valida o estoque
+      //Nessa validação temos a rejeição da liberação quando:
+      // 1. Não existe estoque para o material e deposito;
+      // 2. A quantidade disponível é menor que a quantidade necessária
+      // A quantidades setadas no estoque podem vir do banco como string, por isso o uso do number
+      if (
+        !estoque ||
+        Number(estoque.quantidadeDisponivel) <
+          Number(reserva.quantidadeNecessaria)
+      )
+        req.reject(409, `Estoque insuficiente para a ordem ${ordem.codigo}`);
+
+      //Move a quantidade disponível para reservada
+      //A quantidade total não muda. A quantidade apenas passa de disponível para reservada
+      //Atualiza enquanto o bloqueio realizado pelo forUpdate continua ativo
+      await UPDATE(Estoques, estoque.ID).with({
+        quantidadeDisponivel:
+          Number(estoque.quantidadeDisponivel) -
+          Number(reserva.quantidadeNecessaria),
+        quantidadeReservada:
+          Number(estoque.quantidadeReservada || 0) +
+          Number(reserva.quantidadeNecessaria),
+      });
+
+      //Registra o movimento
+      //Importante para um histórico das movimentações para rastreabilidade
+      await INSERT.into(MovimentosEstoque).entries({
+        ordem_ID: ID,
+        material_ID: reserva.material_ID,
+        deposito_ID: reserva.deposito_ID,
+        quantidade: reserva.quantidadeNecessaria,
+        tipo: "RESERVA",
+        origem: "liberarOrdem",
+      });
+    }
+    //Atualiza o status da ordem
+    //Quando do sucesso da movimentação a ordem para de ABERTA para LIBERADA
+    await UPDATE(Ordens, ID).with({
+      status_code: "LIBERADA",
+    });
+  }
 
   async cancelarOrdem(req) {}
 
