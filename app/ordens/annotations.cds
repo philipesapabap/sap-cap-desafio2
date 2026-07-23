@@ -1,6 +1,11 @@
 using PlanejamentoService as service from '../../srv/planejamento-service';
 
 annotate service.Ordens with @(
+    UI.Identification          : [{
+        $Type : 'UI.DataFieldForAction',
+        Action: 'PlanejamentoService.liberarOrdem',
+        Label : 'Liberar ordem'
+    }],
 
     UI.HeaderInfo              : {
         TypeName      : 'Ordem',

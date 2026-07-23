@@ -21,7 +21,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     );
     this.before("SAVE", Ordens, this.validarOrdemAntesDeSalvar);
 
-    this.on("liberarOrdem", Ordens, this.liberarOrdem);
+    this.on("liberarOrdem", Ordens, this.onliberarOrdem);
     this.on("cancelarOrdem", Ordens, this.cancelarOrdem);
     this.on("processarLote", LotesLiberacao, this.processarLote);
 
@@ -315,7 +315,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     await this.validarPeriodoDaOrdem(req);
   }
 
-  async liberarOrdem(req) {
+  async onliberarOrdem(req) {
     //Obtém o ID da ordem a partir da URL da requisição
     const { ID } = req.params[0];
     //Delega a lógica principal ao método abaixo
