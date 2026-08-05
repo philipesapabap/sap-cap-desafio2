@@ -1,9 +1,12 @@
 using PlanejamentoService as service from '../../srv/planejamento-service';
 
 annotate service.Ordens with @(
+    // Identifica as principais informações e ações em uma Object Page
     UI.Identification          : [
         {
+            // Informa ao Fiori Elements que o elemento deve ser apresentado como uma ação
             $Type : 'UI.DataFieldForAction',
+            // Ao clicar na action, o frotend chama a action CAP indicada em Action
             Action: 'PlanejamentoService.liberarOrdem',
             Label : 'Liberar ordem'
         },
@@ -14,17 +17,24 @@ annotate service.Ordens with @(
         },
     ],
 
+    // Configura o cabeçalho principal da Object Page
     UI.HeaderInfo              : {
+        // Nome de um único registro
         TypeName      : 'Ordem',
+        // Nome da coleção
         TypeNamePlural: 'Ordens',
+        // Título principal da página
         Title         : {Value: codigo},
+        // Texto abaixo ou próximo ao título
         Description   : {Value: descricao}
-    }, //Aplica na Object Page
+    },
 
+    // Define quais campos aparecem inicialmente na barra de filtros do List Report
+    // Essa anotação não define as colunas da tabela. Ela define somente os filtros principais.
     UI.SelectionFields         : [
         codigo,
         centro_ID,
-        //Status_code não existe, é uma foreign kays gerada pelo CAP,
+        //Status_code não existe, é uma foreign keys gerada pelo CAP,
         //Não elementos CDS reais no momento em que o annotate service.Ordens with {...} é processado
         //Gerado na transformação do OData
         status_code,
@@ -38,7 +48,9 @@ annotate service.Ordens with @(
         //entity Ordens as projection on db.Ordens{...}
         comRiscoEstoque
     ],
-
+    // Agrupa campos relacionados para exibição conjunta, principalmente na Object Page
+    // # É o qualificador/identificador do grupo
+    // Qualificador do grupo: Dados Gerias
     UI.FieldGroup #DadosGerais : {
         $Type: 'UI.FieldGroupType',
         Data : [
@@ -72,6 +84,7 @@ annotate service.Ordens with @(
             }
         ]
     },
+    // Identificador do grupo: Planejamento
     UI.FieldGroup #Planejamento: {
         $Type: 'UI.FieldGroupType',
         Data : [
@@ -93,6 +106,11 @@ annotate service.Ordens with @(
             }
         ]
     },
+    // Define as sessões e subsessões da Object Page
+    // Os dois primeiros apontam para FieldGroup's em Target
+    // Já a sessão Reservas aponta para uma assossiação em Target
+    // Portanto, essa facet deve gerar uma tabela(UI.LineItem) de reservas dento da Object Page
+    // Cada item possui $Type: tipo do elemento visual
     UI.Facets                  : [
         {
             $Type : 'UI.ReferenceFacet',
@@ -113,6 +131,7 @@ annotate service.Ordens with @(
             Target: 'reservas/@UI.LineItem'
         },
     ],
+    // Define as colunas da tabela principal de ordens no List Report
     UI.LineItem                : [
         {
             $Type: 'UI.DataField',
@@ -162,6 +181,8 @@ annotate service.Ordens with @(
     ],
 );
 
+// Define as colunas da tabela de reservas
+// Esse é exatamente o LineItem acessado pelo facet -> Target: 'reservas/@UI.LineItem'
 annotate service.ReservasMateriais with @(UI.LineItem: [
     {
         Value: material_ID,

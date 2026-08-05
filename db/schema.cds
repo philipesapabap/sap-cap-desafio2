@@ -110,10 +110,10 @@ entity ResponsabilidadesOrdem : cuid {
 }
 
 entity LotesLiberacao : cuid, managed {
-    codigo        : String(30) not null;
-    descricao     : String(160);
-    status        : Association to StatusLote default 'ABERTO';
-    solicitadoPor : Association to Usuarios;
+    codigo        : String(30) not null                        @title       : 'Código';
+    descricao     : String(160)                                @title       : 'Descrição';
+    status        : Association to StatusLote default 'ABERTO' @Common.Label: 'Status do lote';
+    solicitadoPor : Association to Usuarios                    @Common.Label: 'Solicitante';
 
     itens         : Composition of many ItensLoteLiberacao
                         on itens.lote = $self;

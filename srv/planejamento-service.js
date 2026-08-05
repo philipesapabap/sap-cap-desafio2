@@ -1,6 +1,21 @@
 const cds = require("@sap/cds");
 const { SELECT, UPDATE, INSERT } = cds.ql;
 
+/**
+ * Representa uma falha esperada de regra de negócio.
+ *
+ * Permite que cada handler decida como tratar a falha:
+ * a liberação individual rejeita a requisição, enquanto o lote
+ * registra o erro somente no item afetado.
+ */
+class ErroDeNegocio extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = "ErroDeNegocio";
+    this.status = status;
+  }
+}
+
 module.exports = class PlanejamentoService extends cds.ApplicationService {
   async init() {
     console.log(">>> PlanejamentoService init carregou");
@@ -23,7 +38,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
     this.on("liberarOrdem", Ordens, this.onliberarOrdem);
     this.on("cancelarOrdem", Ordens, this.oncancelarOrdem);
-    this.on("processarLote", LotesLiberacao, this.processarLote);
+    this.on("processarLote", LotesLiberacao, this.onProcessarLote);
 
     return super.init();
   }
@@ -315,6 +330,15 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     await this.validarPeriodoDaOrdem(req);
   }
 
+  /**
+   * Processa a action de liberação individual chamada pela Object Page.
+   *
+   * Converte falhas esperadas da regra de negócio em `req.reject()`,
+   * garantindo resposta HTTP adequada e rollback da requisição individual.
+   *
+   * @param {cds.Request} req Requisição CAP da action vinculada à ordem.
+   * @returns {Promise<object>} Ordem atualizada após a liberação.
+   */
   async onliberarOrdem(req) {
     //Obtém o ID da ordem a partir da URL da requisição
     const { ID } = req.params[0];
@@ -324,60 +348,85 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     // Reservar os estoques;
     // Inserir os movimentos; e
     // Atualizar o status.
-    await this.liberarOrdemPorID(ID, req);
+    try {
+      await this.liberarOrdemPorID(ID);
+    } catch (error) {
+      if (error instanceof ErroDeNegocio)
+        return req.reject(error.status, error.message);
+
+      throw error;
+    }
     //Depois da liberação, consulta novamente a ordem
     //Isso devolve ao frontend a ordem já com o status_code: "Liberada"
     return SELECT.one.from(this.entities.Ordens).where({ ID });
   }
 
-  async liberarOrdemPorID(ID, req) {
+  /**
+   * Executa a regra transacional de liberação de uma ordem.
+   *
+   * Valida ordem, reservas e estoques; movimenta as quantidades,
+   * registra o histórico de estoque e altera o status para LIBERADA.
+   * Não rejeita diretamente uma requisição CAP, pois a rotina também
+   * é reutilizada pelo processamento em lote.
+   *
+   * @param {string} ID Identificador UUID da ordem.
+   * @returns {Promise<void>}
+   * @throws {ErroDeNegocio} Quando uma regra funcional impede a liberação.
+   * @throws {Error} Quando ocorre uma falha inesperada de infraestrutura.
+   * Throws interrompe imediatamente a execução atual e lança um erro
+   * o JS procura um catch capaz de tratar esse erro
+   * Para a liberação individual o catch é tratado no onliberarOrdem
+   * Para libeção via lote o catch é tratado no onProcessarLote
+   */
+  async liberarOrdemPorID(ID) {
     //Traz as entidades expostas pelo PlanejamentoService
     //Tanto este, como o comando abaixo, buscam definições
     //A diferença está onde vamos buscar
     //Ordens e ReservasMateriais possuem exposições sendo feita pelo serviço(planejamento-service.cds)
     //Por isso o uso do this, poque este serviço, na pasta .cds, expões as entidades
-    //O que não acontece com Ordens e ReservasMateriais
+    //O que não acontece com Estoques e MovimentosEstoque
     //Ambas as declarações poderiam retirar as definições(usar a referência) vinda de cds.entites()
-    //Contudo, a diferença é que a entidade de serviço pode ter caracteristicas adicionais, não previstas,
-    //nem possíveis na cada de persitência(schema.cds)
-    //Por exemplo, campos virtuais, como o usado na entidade Ordens, eles não definidos/declarados na
-    // camada de serviço e não na de persistência
-    // Poderiamos expor Estoques e MovimentosEstoque na camada de serviço? Sim!
+    //Contudo, a diferença é que a entidade declarada no serviço(planejamento-service.cds)
+    //pode ter caracteristicas/definições adicionais.
+    //Caracteristicas essas não previstas nem possíveis na camada de persitência(schema.cds)
+    //Por exemplo, campos virtuais, como o usado na entidade Ordens, eles são definidos/declarados na
+    //camada de serviço e não na de persistência.
+    //Poderiamos expor Estoques e MovimentosEstoque na camada de serviço? Sim!
     //Mas então possívelmente seriam acessíveis pela API e talvez não fosse desejado.
     //Estoques e MovimentosEstoque são detalhes internos da regra de liberação.
     //Portanto acessá-las pelo modelo de domínio permite usá-las internamente sem necessariamente
     //expô-las aos clientes.
     const { Ordens, ReservasMateriais } = this.entities;
-    //Já aqui é diferente.
+    //Como funciona tecnicamente a declaração abaixo?
     //Primeiro o CAP procura as entidades declaradas dentro do namespace desafio.ordens
     //Depois o JS retira duas dessas entidades e cria variáveis com os mesmos nomes.
-    // cds.entitoes pede ao CAP:
+    // Ou seja:
+    // Primeniro a parte do CAP -> O cds.entities pede ao CAP:
     // "Entregue as definições das entidades que pertencem ao namespace desafio.ordens"
-    //OBS: Essas definições representama ESTRUTURA das entidades. Elas não são os registros
-    //armazenados no banco.
-    //Ja a parte do JS const { Est, Movi} aplica o conceito de desestruturação de objeto
-    /*     Sem a desestruturação seria algo como
-        
-        const entidades = cds.entities("desafio.ordens");
+    // OBS: Essas definições representama a ESTRUTURA das entidades.
+    // Elas não são os registros armazenados no banco.
+    // Segundo a parte do JS -> const { Est, Movi} aplica o conceito de desestruturação de objeto.
+    /*  Sem a desestruturação seria algo como:
+     *
+     *    const entidades = cds.entities("desafio.ordens");
+     *    const Estoques = entidades.Estoques;
+     *    const MovimentosEstoque = entidades.MovimentosEstoque;
+     */
 
-        const Estoques = entidades.Estoques;
-        const MovimentosEstoque = entidades.MovimentosEstoque;
-
-    */
-    //     PARA QUE SERVEM AS VARIÁVEIS CRIADAS?
-    // Para que quando precisarmos fazer consultas ou alterações no banco,
-    // o CAP tenha a referência(como um mapa ou a planta de uma casa)
-    // Então quando dizemos: const estoque = await SELECT.one.from(Estoques).where({ ID });
+    //        PARA QUE SERVEM AS VARIÁVEIS CRIADAS?
+    //Para que quando precisarmos fazer consultas ou alterações no banco,
+    //o CAP tenha a referência(como um mapa ou a planta de uma casa)
+    //Então quando dizemos: const estoque = await SELECT.one.from(Estoques).where({ ID });
     //Estamos dizendo: Usa essa planta(Estoques) como referência(que é do tipo entidades.Estoques)
-    //  e efetivamente busca um registro no banco
+    //e efetivamente busca um registro no banco
     const { Estoques, MovimentosEstoque } = cds.entities("desafio.ordens");
     /*
     Em resumo:
 
         this.entities
-        -> Quero a entidade conforme ela foi exposta e configurada neste serviço.
+        -> Quero a entidade conforme ela foi exposta e configurada neste serviço(srv).
         cds.entities("desafio.ordens")
-        -> Quero a entidade original definida neste namespace do modelo de domínio.
+        -> Quero a entidade original definida no namespace do modelo de domínio(db).
 
     */
 
@@ -392,11 +441,11 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
 
     //Se não existir, encerra a requisição com HTTP 404
-    if (!ordem) req.reject(404, "Ordem não encontrada");
+    if (!ordem) throw new ErroDeNegocio(404, "Ordem não encontrada");
 
     //Se a ordem não estiver "aberta" a liberação é interrompida
     if (ordem.status_code !== "ABERTA")
-      req.reject(409, `Ordem ${ordem.codigo} não está aberta`);
+      throw new ErroDeNegocio(409, `Ordem ${ordem.codigo} não está aberta`);
 
     //Busca as reservas da ordem
     const reservas = await SELECT.from(ReservasMateriais).where({
@@ -405,7 +454,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
     //Se não houver reserva a liberação é interrompida
     if (!reservas.length)
-      req.reject(409, `Ordem ${ordem.codigo} não possui reservas`);
+      throw new ErroDeNegocio(409, `Ordem ${ordem.codigo} não possui reservas`);
 
     //Loop para processamento de cada reserva
     //Para cada ordem(loop), o código busca(selet) o estoque correspondente ao material e depósito
@@ -431,7 +480,10 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         Number(estoque.quantidadeDisponivel) <
           Number(reserva.quantidadeNecessaria)
       )
-        req.reject(409, `Estoque insuficiente para a ordem ${ordem.codigo}`);
+        throw new ErroDeNegocio(
+          409,
+          `Estoque insuficiente para a ordem ${ordem.codigo}`,
+        );
 
       //Move a quantidade disponível para reservada
       //A quantidade total não muda. A quantidade apenas passa de disponível para reservada
@@ -501,5 +553,94 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     });
   }
 
-  async processarLote(req) {}
+  /**
+   * Nesse exercício, LOTE é um agrupamento de várias ordens que serão processadas juntas.
+   * Imagine que precisamos liberar 100 ordens.
+   * Em vez de clicar "liberar" 100 vezes, cria um lote contendo essas 100 ordens e exec processarLote
+   * Contudo, processarLote não libera diretamente a ordem.
+   * Ele COORDENA a execução lógica de liberacao para várias ordens(liberarOrdenPorID)
+   *
+   * Processa as ordens pendentes vinculadas a um lote de liberação.
+   *
+   * Cada item é processado individualmente. Falhas funcionais são
+   * registradas no próprio item e não interrompem os itens seguintes.
+   * Falhas técnicas inesperadas são relançadas para provocar rollback
+   * da transação e impedir persistência inconsistente.
+   *
+   * Ao final, o lote recebe PROCESSADO quando todos os itens têm sucesso
+   * ou ERRO quando pelo menos um item apresenta falha funcional.
+   *
+   * @param {cds.Request} req Requisição CAP da action vinculada ao lote.
+   * @returns {Promise<object>} Lote atualizado após o processamento.
+   */
+  async onProcessarLote(req) {
+    const { ID } = req.params[0];
+    //LotesLiberaacao é o cabeçalho
+    //ItensLotesLiberacao contém os itens(ordens)
+    const { LotesLiberacao, ItensLoteLiberacao } = this.entities;
+
+    //Buscar Lote pelo ID informado pelo Fiori
+    //forUpdate evita a liberação da mesma ordem duas vezes por processos concorrentes/simultâneas
+    const lote = await SELECT.one
+      .from(LotesLiberacao)
+      .where({ ID })
+      .forUpdate();
+
+    if (!lote) req.reject(404, "Lote não encontrado");
+
+    // No desenho foi solicitado a busca por lotes ABERTO, logo, não será possível realizar reprocesamento
+    // Uma vez vez processado, com sucesso ou erro, o statu_code será alterado
+    if (lote.status_code !== "ABERTO")
+      req.reject(409, "Lote já foi processado");
+
+    // Buscar os itens do lote(Ordens)
+    // No desenho foi solicitado a busca por itens PENDENTE.
+    // Logo, não será possível realizar reprocesamento
+    // Uma vez vez processado, com sucesso ou erro, o statu_code será alterado
+    const itens = await SELECT.from(ItensLoteLiberacao).where({
+      lote_ID: ID,
+      status_code: "PENDENTE",
+    });
+
+    if (!itens.length) req.reject(409, "Lote não possui itens pendentes");
+
+    let sucessos = 0;
+    let erros = 0;
+
+    for (const item of itens) {
+      // O try/catch individual é o que possilita o processamento parcial.
+      // Se uma ordem falhar, a próxima ainda será processada
+      // Se o try/catch estivesse encapsulando o for então, no primeiro erro encontrado, sairia do loop sem sequência do processamento
+      // Embora não produza automaticamente um COMMIT separado para cada item.
+      try {
+        //liberarOrdemPorID contém a regra de negócio para liberar cada ordem
+        await this.liberarOrdemPorID(item.ordem_ID);
+
+        await UPDATE(ItensLoteLiberacao, item.ID).with({
+          status_code: "SUCESSO",
+          processado: true,
+          mensagem: "Ordem liberada",
+        });
+
+        sucessos += 1;
+      } catch (error) {
+        // Falhas inesperadas de banco ou programação devem cancelar o lote
+        // para evitar commit de dados tecnicamente inconsistentes.
+        if (!(error instanceof ErroDeNegocio)) throw error;
+
+        // Falhas funcionais esperadas afetam somente o item atual.
+        await UPDATE(ItensLoteLiberacao, item.ID).with({
+          status_code: "ERRO",
+          processado: true,
+          mensagem: error.message,
+        });
+
+        erros += 1;
+      }
+    }
+    await UPDATE(LotesLiberacao, ID).with({
+      status_code: erros > 0 ? "ERRO" : "PROCESSADO",
+    });
+    return SELECT.one.from(LotesLiberacao).where({ ID });
+  }
 };
