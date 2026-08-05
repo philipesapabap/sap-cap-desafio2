@@ -6,11 +6,21 @@
     "@sap/cds": "^9"
   },
   "devDependencies": {
+    "@cap-js/cds-test": "^0.4.1",
     "@cap-js/sqlite": "^2.4",
-    "cds-plugin-ui5": "^0.17.0"
+    "@sap/cds-dk": "^9.8.3",
+    "c8": "^11.0.0",
+    "cds-plugin-ui5": "^0.17.0",
+    "puppeteer-core": "^24.43.1"
   },
   "scripts": {
     "start": "cds-serve",
+    "test": "cds test",
+    "test:coverage": "c8 cds test",
+    "test:fiori": "node test/ui/run-fiori-tests.js",
+    "test:fiori:ordens": "node test/ui/run-fiori-tests.js ordens",
+    "test:fiori:lotes": "node test/ui/run-fiori-tests.js lotes",
+    "test:integration:hdi": "RUN_PLANEJAMENTO_HDI_INTEGRATION=true cds bind --exec --profile hybrid -- npx cds test test/integration/srv/PlanejamentoServiceHdi.integration.test.js",
     "watch-ordens": "cds watch --open treinamento.cap.ordens/index.html?sap-ui-xx-viewCache=false --livereload false",
     "watch-lotes": "cds watch --open treinamento.cap.lotes/index.html?sap-ui-xx-viewCache=false --livereload false"
   },
