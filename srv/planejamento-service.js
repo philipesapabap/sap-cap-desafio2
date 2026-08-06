@@ -9,17 +9,19 @@ const { SELECT, UPDATE, INSERT } = cds.ql;
  * registra o erro somente no item afetado.
  */
 class ErroDeNegocio extends Error {
-  constructor(status, message) {
-    super(message);
+  constructor(status, messageKey, args = {}) {
+    super(messageKey);
     this.name = "ErroDeNegocio";
     this.status = status;
+    this.messageKey = messageKey;
+    this.args = args;
   }
 }
 
 module.exports = class PlanejamentoService extends cds.ApplicationService {
   async init() {
-    console.log(">>> PlanejamentoService init carregou");
-    const { Ordens, LotesLiberacao } = this.entities;
+    const { Ordens, LotesLiberacao, ReservasMateriais, ItensLoteLiberacao } =
+      this.entities;
 
     //O filtro virtual precisa ser convertido antes dos demais filtros mexerem no where.
     //Se deixarmos o escopo de leitura embrulhar o where primeiro, o campo virtual pode
@@ -28,6 +30,33 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     this.before("READ", Ordens.drafts, this.aplicarFiltroDeRiscoEstoque);
     this.before("READ", Ordens, this.aplicarEscopoDeLeitura);
     this.before("READ", Ordens.drafts, this.aplicarEscopoDeLeitura);
+
+    // Inclui na consulta os campos técnicos necessários ao cálculo da situação.
+    this.before("READ", ReservasMateriais, this.incluirCamposDaSituacaoEstoque);
+    this.before(
+      "READ",
+      ReservasMateriais.drafts,
+      this.incluirCamposDaSituacaoEstoque,
+    );
+
+    // Calcula a situação depois que os dados forem recuperados.
+    this.after("READ", ReservasMateriais, this.preencherSituacaoEstoque);
+    this.after("READ", ReservasMateriais.drafts, this.preencherSituacaoEstoque);
+
+    // Preenche a mensagem apresentada na tabela dos itens do lote.
+    // Quando ainda não existe resultado, apresenta a mensagem de espera
+    // somente na interface, sem gravá-la no banco de dados.
+    this.after("READ", ItensLoteLiberacao, (itens, req) => {
+      const registros = Array.isArray(itens) ? itens : [itens];
+
+      for (const item of registros) {
+        if (!item) continue;
+
+        item.mensagemExibicao =
+          item.mensagem ||
+          cds.i18n.messages.at("AWAITING_PROCESSING", req.locale);
+      }
+    });
 
     this.before(
       ["CREATE", "UPDATE"],
@@ -50,7 +79,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
     const matricula = req.user?.id;
     if (!matricula || matricula === "anonymous") {
-      return req.reject(401, "Faça login para consultar ordens");
+      return req.reject(401, "AUTH_LOGIN_REQUIRED");
     }
 
     if (!req.query?.SELECT) return;
@@ -318,11 +347,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         ? "dataInicioPlanejada"
         : "dataFimPlanejada";
 
-      return req.error(
-        400,
-        "Período planejado inválido: fim deve ser maior que início",
-        campoAlterado,
-      );
+      return req.error(400, "INVALID_PLANNED_PERIOD", campoAlterado);
     }
   }
 
@@ -351,9 +376,9 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     try {
       await this.liberarOrdemPorID(ID);
     } catch (error) {
-      if (error instanceof ErroDeNegocio)
-        return req.reject(error.status, error.message);
-
+      if (error instanceof ErroDeNegocio) {
+        return req.reject(error.status, error.messageKey, error.args);
+      }
       throw error;
     }
     //Depois da liberação, consulta novamente a ordem
@@ -441,11 +466,11 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
 
     //Se não existir, encerra a requisição com HTTP 404
-    if (!ordem) throw new ErroDeNegocio(404, "Ordem não encontrada");
+    if (!ordem) throw new ErroDeNegocio(404, "ORDER_NOT_FOUND");
 
     //Se a ordem não estiver "aberta" a liberação é interrompida
     if (ordem.status_code !== "ABERTA")
-      throw new ErroDeNegocio(409, `Ordem ${ordem.codigo} não está aberta`);
+      throw new ErroDeNegocio(409, "ORDER_NOT_OPEN", { code: ordem.codigo });
 
     //Busca as reservas da ordem
     const reservas = await SELECT.from(ReservasMateriais).where({
@@ -454,7 +479,9 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
     //Se não houver reserva a liberação é interrompida
     if (!reservas.length)
-      throw new ErroDeNegocio(409, `Ordem ${ordem.codigo} não possui reservas`);
+      throw new ErroDeNegocio(409, "ORDER_WITHOUT_RESERVATIONS", {
+        code: ordem.codigo,
+      });
 
     //Loop para processamento de cada reserva
     //Para cada ordem(loop), o código busca(selet) o estoque correspondente ao material e depósito
@@ -480,10 +507,9 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         Number(estoque.quantidadeDisponivel) <
           Number(reserva.quantidadeNecessaria)
       )
-        throw new ErroDeNegocio(
-          409,
-          `Estoque insuficiente para a ordem ${ordem.codigo}`,
-        );
+        throw new ErroDeNegocio(409, "INSUFFICIENT_STOCK", {
+          code: ordem.codigo,
+        });
 
       //Move a quantidade disponível para reservada
       //A quantidade total não muda. A quantidade apenas passa de disponível para reservada
@@ -540,16 +566,25 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
 
     //Se não existir, encerra a requisição com HTTP 404
-    if (!ordem) req.reject(404, "Ordem não encontrada");
+    if (!ordem) {
+      return req.reject(404, "ORDER_NOT_FOUND");
+    }
 
     //Se a ordem não estiver "aberta" a liberação é interrompida
-    if (ordem.status_code !== "ABERTA")
-      req.reject(409, `Ordem ${ordem.codigo} não está aberta`);
+    if (ordem.status_code !== "ABERTA") {
+      return req.reject(409, "ORDER_NOT_OPEN", { code: ordem.codigo });
+    }
+
+    const observacaoCancelamento = cds.i18n.messages.at(
+      "CANCELLATION_NOTE",
+      req.locale,
+      { reason: motivo },
+    );
 
     //Atualiza o status da ordem
     await UPDATE(Ordens, ID).with({
       status_code: "CANCELADA",
-      observacao: `Motivo do cancelamento: ${motivo}`,
+      observacao: observacaoCancelamento,
     });
   }
 
@@ -586,12 +621,14 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       .where({ ID })
       .forUpdate();
 
-    if (!lote) req.reject(404, "Lote não encontrado");
+    if (!lote) {
+      return req.reject(404, "LOT_NOT_FOUND");
+    }
 
     // No desenho foi solicitado a busca por lotes ABERTO, logo, não será possível realizar reprocesamento
     // Uma vez vez processado, com sucesso ou erro, o statu_code será alterado
     if (lote.status_code !== "ABERTO")
-      req.reject(409, "Lote já foi processado");
+      return req.reject(409, "LOT_ALREADY_PROCESSED");
 
     // Buscar os itens do lote(Ordens)
     // No desenho foi solicitado a busca por itens PENDENTE.
@@ -602,7 +639,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       status_code: "PENDENTE",
     });
 
-    if (!itens.length) req.reject(409, "Lote não possui itens pendentes");
+    if (!itens.length) return req.reject(409, "LOT_WITHOUT_PENDING_ITEMS");
 
     let sucessos = 0;
     let erros = 0;
@@ -619,7 +656,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         await UPDATE(ItensLoteLiberacao, item.ID).with({
           status_code: "SUCESSO",
           processado: true,
-          mensagem: "Ordem liberada",
+          mensagem: cds.i18n.messages.at("ORDER_RELEASED", req.locale),
         });
 
         sucessos += 1;
@@ -632,7 +669,11 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         await UPDATE(ItensLoteLiberacao, item.ID).with({
           status_code: "ERRO",
           processado: true,
-          mensagem: error.message,
+          mensagem: cds.i18n.messages.at(
+            error.messageKey,
+            req.locale,
+            error.args,
+          ),
         });
 
         erros += 1;
@@ -642,5 +683,147 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       status_code: erros > 0 ? "ERRO" : "PROCESSADO",
     });
     return SELECT.one.from(LotesLiberacao).where({ ID });
+  }
+
+  /**
+   * Preenche a situação de estoque das reservas retornadas pelo serviço.
+   *
+   * A situação é calculada com a mesma combinação utilizada na liberação:
+   * material + depósito.
+   * O resultado é apenas informativo e representa o saldo
+   * disponível no momento da leitura da tela.
+   *
+   * @param {object|object[]} resultado Uma reserva ou uma coleção de reservas.
+   * @param {cds.Request} req Requisição CAP usada para identificar o idioma.
+   * @returns {Promise<void>}
+   */
+  async preencherSituacaoEstoque(resultado, req) {
+    const reservas = Array.isArray(resultado)
+      ? resultado
+      : resultado
+        ? [resultado]
+        : [];
+
+    if (!reservas.length) return;
+
+    const reservasValidas = reservas.filter(
+      (reserva) =>
+        reserva.material_ID &&
+        reserva.deposito_ID &&
+        reserva.quantidadeNecessaria != null,
+    );
+
+    if (!reservasValidas.length) return;
+
+    const { Estoques } = cds.entities("desafio.ordens");
+
+    const materiais = [
+      ...new Set(reservasValidas.map((reserva) => reserva.material_ID)),
+    ];
+
+    // Busca os estoques dos materiais retornados na leitura.
+    const estoques = await SELECT.from(Estoques)
+      .columns("material_ID", "deposito_ID", "quantidadeDisponivel")
+      .where({
+        material_ID: { in: materiais },
+      });
+
+    // Cria um mapa para localizar o estoque pela combinação material + depósito.
+    const estoquesPorChave = new Map(
+      estoques.map((estoque) => [
+        `${estoque.material_ID}|${estoque.deposito_ID}`,
+        estoque,
+      ]),
+    );
+
+    for (const reserva of reservasValidas) {
+      const chave = `${reserva.material_ID}|${reserva.deposito_ID}`;
+      const estoque = estoquesPorChave.get(chave);
+
+      // Disponibiliza para a interface o saldo atual encontrado no estoque.
+      // Quando não existe estoque cadastrado, mantém null para diferenciar
+      // ausência de cadastro de um estoque existente com saldo igual a zero.
+      reserva.quantidadeDisponivel = estoque
+        ? Number(estoque.quantidadeDisponivel)
+        : null;
+
+      if (!estoque) {
+        reserva.situacaoEstoque = cds.i18n.messages.at(
+          "STOCK_NOT_REGISTERED",
+          req.locale,
+        );
+
+        reserva.criticidadeSituacaoEstoque = 1;
+        continue;
+      }
+
+      const disponivel = Number(estoque.quantidadeDisponivel);
+      const solicitado = Number(reserva.quantidadeNecessaria);
+
+      if (disponivel < solicitado) {
+        reserva.situacaoEstoque = cds.i18n.messages.at(
+          "STOCK_INSUFFICIENT",
+          req.locale,
+        );
+
+        reserva.criticidadeSituacaoEstoque = 1;
+        continue;
+      }
+
+      reserva.situacaoEstoque = cds.i18n.messages.at(
+        "STOCK_AVAILABLE",
+        req.locale,
+      );
+
+      reserva.criticidadeSituacaoEstoque = 3;
+    }
+  }
+
+  /**
+   * Inclui na consulta os campos usados para calcular a situação do estoque.
+   *
+   * O Fiori solicita os códigos e descrições por meio das associações, mas não
+   * inclui necessariamente as chaves estrangeiras `material_ID` e `deposito_ID`.
+   * Esses campos são necessários para localizar o registro correspondente em
+   * Estoques pela combinação material + depósito.
+   *
+   * @param {cds.Request} req Requisição de leitura de ReservasMateriais.
+   * @returns {void}
+   */
+  incluirCamposDaSituacaoEstoque(req) {
+    const colunas = req.query?.SELECT?.columns;
+
+    // Sem um $select explícito, o CAP já retorna os campos persistidos.
+    if (!Array.isArray(colunas)) return;
+
+    const dadosDeEstoqueForamSolicitados = colunas.some(
+      (coluna) =>
+        coluna?.ref?.at(-1) === "quantidadeDisponivel" ||
+        coluna?.ref?.at(-1) === "situacaoEstoque" ||
+        coluna?.ref?.at(-1) === "criticidadeSituacaoEstoque",
+    );
+
+    // Evita adicionar campos e executar processamento em leituras que não
+    // utilizam a coluna de situação.
+    if (!dadosDeEstoqueForamSolicitados) return;
+
+    const camposNecessarios = [
+      "material_ID",
+      "deposito_ID",
+      "quantidadeNecessaria",
+    ];
+
+    for (const campo of camposNecessarios) {
+      const campoJaFoiSelecionado = colunas.some(
+        (coluna) =>
+          Array.isArray(coluna?.ref) &&
+          coluna.ref.length === 1 &&
+          coluna.ref[0] === campo,
+      );
+
+      if (!campoJaFoiSelecionado) {
+        colunas.push({ ref: [campo] });
+      }
+    }
   }
 };

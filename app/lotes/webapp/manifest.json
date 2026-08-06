@@ -108,9 +108,9 @@
           "target": "LotesLiberacaoObjectPage"
         },
         {
-          "pattern": "LotesLiberacao({key})/itens({key2}):?query:",
-          "name": "ItensLoteLiberacaoObjectPage",
-          "target": "ItensLoteLiberacaoObjectPage"
+          "pattern": "Ordens(ID={orderId},IsActiveEntity=true):?query:",
+          "name": "OrdensObjectPageFromLote",
+          "target": "OrdensObjectPageFromLote"
         }
       ],
       "targets": {
@@ -150,21 +150,38 @@
               "navigation": {
                 "itens": {
                   "detail": {
-                    "route": "ItensLoteLiberacaoObjectPage"
+                    "route": "OrdensObjectPageFromLote",
+                     "parameters": {
+                      "orderId": "{ordem_ID}"
+                     }
+                  }
+                }
+              },
+              "controlConfiguration": {
+                "itens/@com.sap.vocabularies.UI.v1.LineItem": {
+                  "tableSettings": {
+                    "type": "GridTable"
                   }
                 }
               }
             }
           }
         },
-        "ItensLoteLiberacaoObjectPage": {
+        "OrdensObjectPageFromLote": {
           "type": "Component",
-          "id": "ItensLoteLiberacaoObjectPage",
+          "id": "OrdensObjectPageFromLote",
           "name": "sap.fe.templates.ObjectPage",
           "options": {
             "settings": {
               "editableHeaderContent": false,
-              "contextPath": "/LotesLiberacao/itens"
+              "contextPath": "/Ordens",
+              "controlConfiguration": {
+                "reservas/@com.sap.vocabularies.UI.v1.LineItem": {
+                  "tableSettings": {
+                    "type": "GridTable"
+                  }
+                }
+              }
             }
           }
         }

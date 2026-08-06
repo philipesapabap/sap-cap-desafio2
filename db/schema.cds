@@ -8,26 +8,30 @@ using {
 @cds.odata.valuelist
 entity StatusOrdem {
     key code  : String(20);
-        texto : String(80) not null;
+        // Campo traduzível: o CAP armazena as traduções em uma entidade auxiliar
+        // e retorna o texto conforme o idioma da requisição.
+        // Tradução disponível → usa a tradução
+        // Tradução ausente    → usa o valor da entidade principal(Conceito fallback)
+        texto : localized String(80) not null;
 }
 
 @cds.odata.valuelist
 entity Prioridades {
     key code  : String(10);
-        texto : String(80) not null;
+        texto : localized String(80) not null;
         peso  : Integer not null;
 }
 
 @cds.odata.valuelist
 entity StatusLote {
     key code  : String(20);
-        texto : String(80) not null;
+        texto : localized String(80) not null;
 }
 
 @cds.odata.valuelist
 entity StatusItemLote {
     key code  : String(20);
-        texto : String(80) not null;
+        texto : localized String(80) not null;
 }
 
 @cds.odata.valuelist
@@ -76,13 +80,13 @@ entity Estoques : cuid, managed {
 }
 
 entity Ordens : cuid, managed {
-    codigo              : String(30) not null                         @title       : 'Código';
-    descricao           : String(160) not null                        @title       : 'Descrição';
-    centro              : Association to Centros not null             @title       : 'Centro';
+    codigo              : String(30) not null                         @title       : '{i18n>order}';
+    descricao           : String(160) not null                        @title       : '{i18n>description}';
+    centro              : Association to Centros not null             @title       : '{i18n>center}';
     localInstalacao     : Association to LocaisInstalacao not null;
     responsavel         : Association to Usuarios not null;
-    status              : Association to StatusOrdem default 'ABERTA' @Common.Label: 'Status da ordem';
-    prioridade          : Association to Prioridades default 'MEDIA'  @Common.Label: 'Prioridade da ordem';
+    status              : Association to StatusOrdem default 'ABERTA' @Common.Label: '{i18n>status}';
+    prioridade          : Association to Prioridades default 'MEDIA'  @Common.Label: '{i18n>priority}';
     dataInicioPlanejada : DateTime not null;
     dataFimPlanejada    : DateTime not null;
     valorEstimado       : Decimal(13, 2) default 0;
@@ -110,10 +114,10 @@ entity ResponsabilidadesOrdem : cuid {
 }
 
 entity LotesLiberacao : cuid, managed {
-    codigo        : String(30) not null                        @title       : 'Código';
-    descricao     : String(160)                                @title       : 'Descrição';
-    status        : Association to StatusLote default 'ABERTO' @Common.Label: 'Status do lote';
-    solicitadoPor : Association to Usuarios                    @Common.Label: 'Solicitante';
+    codigo        : String(30) not null                        @title       : '{i18n>code}';
+    descricao     : String(160)                                @title       : '{i18n>description}';
+    status        : Association to StatusLote default 'ABERTO' @Common.Label: '{i18n>status}';
+    solicitadoPor : Association to Usuarios                    @Common.Label: '{i18n>requester}';
 
     itens         : Composition of many ItensLoteLiberacao
                         on itens.lote = $self;
@@ -156,6 +160,15 @@ view V_AcessosOrdem as
             responsabilidade.papel             as papel
     };
 
+/*
+* A entidade principal é Ordens.
+* A view V_ReservasPorOrdem calcula:
+**totalReservas
+**quantidadeTotal
+*O left join junta esse resumo com cada ordem.
+* Embora V_OrdensComResumo não tenha a palavra localized diretamente,
+* ela se torna localizada porque seleciona campos localizados.
+*/
 view V_OrdensComResumo as
     select from Ordens as ordem
     left join V_ReservasPorOrdem as resumo

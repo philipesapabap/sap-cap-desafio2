@@ -146,10 +146,10 @@
             "settings": {
               "editableHeaderContent": false,
               "contextPath": "/Ordens",
-              "navigation": {
-                "reservas": {
-                  "detail": {
-                    "route": "ReservasMateriaisObjectPage"
+              "controlConfiguration": {
+                "reservas/@com.sap.vocabularies.UI.v1.LineItem": {
+                  "tableSettings": {
+                    "type": "GridTable"
                   }
                 }
               }

@@ -9,14 +9,14 @@ service PlanejamentoService @(
     entity Ordens                 as
         projection on db.Ordens {
             *, //Projete todos os campos de db.Ordens. Incluindo campos simples, associações e composições.
-            virtual comRiscoEstoque : Boolean @title: 'Risco de Estoque'
+            virtual comRiscoEstoque : Boolean @title: '{i18n>stockRisk}'
         }
         actions {
             @Common.SideEffects: {
                 TargetProperties: ['in/status_code'],
                 TargetEntities  : [in.status]
             }
-            action liberarOrdem()                                                                returns Ordens;
+            action liberarOrdem()                                                                   returns Ordens;
             @Common.SideEffects: {
                 TargetProperties: [
                     'in/status_code',
@@ -24,10 +24,16 @@ service PlanejamentoService @(
                 ],
                 TargetEntities  : [in.status]
             }
-            action cancelarOrdem(motivo: String(255) not null @title: 'Motivo do cancelamento' ) returns Ordens;
+            action cancelarOrdem(motivo: String(255) not null @title: '{i18n>cancellationReason}' ) returns Ordens;
         };
 
-    entity ReservasMateriais      as projection on db.ReservasMateriais;
+    entity ReservasMateriais      as
+        projection on db.ReservasMateriais {
+            *,
+            virtual quantidadeDisponivel       : Decimal(13, 3),
+            virtual situacaoEstoque            : String(40),
+            virtual criticidadeSituacaoEstoque : Integer @UI.Hidden
+        };
 
     @cds.redirection.target
     entity ResponsabilidadesOrdem as projection on db.ResponsabilidadesOrdem;
@@ -46,7 +52,11 @@ service PlanejamentoService @(
             action processarLote() returns LotesLiberacao;
         };
 
-    entity ItensLoteLiberacao     as projection on db.ItensLoteLiberacao;
+    entity ItensLoteLiberacao     as
+        projection on db.ItensLoteLiberacao {
+            *,
+            virtual mensagemExibicao : String(500)
+        };
 
     @readonly
     entity Usuarios               as projection on db.Usuarios;

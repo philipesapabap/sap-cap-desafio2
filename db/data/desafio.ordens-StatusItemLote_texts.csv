@@ -1,0 +1,7 @@
+locale;code;texto
+pt;PENDENTE;Pendente
+en;PENDENTE;Pending
+pt;SUCESSO;Processado com sucesso
+en;SUCESSO;Processed successfully
+pt;ERRO;Erro no processamento
+en;ERRO;Processing error
