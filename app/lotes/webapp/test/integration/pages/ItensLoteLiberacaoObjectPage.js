@@ -16,8 +16,8 @@ sap.ui.define(['sap/fe/test/ObjectPage', 'sap/ui/test/actions/Press'], function(
     return new ObjectPage(
         {
             appId: 'treinamento.cap.lotes',
-            componentId: 'ItensLoteLiberacaoObjectPage',
-            contextPath: '/LotesLiberacao/itens'
+            componentId: 'OrdensObjectPageFromLote',
+            contextPath: '/Ordens'
         },
         CustomPageDefinitions
     );

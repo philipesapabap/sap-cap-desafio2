@@ -1,0 +1,1431 @@
+# Desafio local: SAP CAP, handlers e SAP Fiori elements para liberação de ordens
+
+## Objetivo
+
+Criar um app local mais avançado que o cadastro simples de produtos.
+Ao final, você deve conseguir:
+
+- modelar um domínio com ordens, reservas, estoque, responsáveis e lotes;
+- criar views CDS com dados achatados e agregados;
+- expor projeções OData V4 para SAP Fiori elements;
+- implementar handlers before, on e after;
+- alterar uma consulta no before READ;
+- transformar filtro virtual da tela em where exists;
+- aplicar escopo de usuário com subquery correlacionada;
+- implementar actions transacionais;
+- usar SELECT ... forUpdate();
+- processar operações em lote;
+- debugar handlers CAP no VS Code;
+- enviar testes HTTP locais;
+- validar o comportamento pela UI e por HTTP.
+
+## Cenário
+
+Você vai criar um app de liberação de ordens de manutenção.
+Uma ordem pode reservar materiais.
+Antes de liberar a ordem, o backend deve verificar:
+
+- se a ordem existe;
+- se a ordem está aberta;
+- se existe pelo menos uma reserva;
+- se o estoque atende todas as reservas;
+- se o usuário tem acesso à ordem;
+- se outra execução não alterou a mesma ordem ao mesmo tempo.
+
+Também haverá uma tela de lotes.
+Um lote contém várias ordens.
+Ao processar o lote, o backend deve tentar liberar cada ordem e registrar sucesso ou erro por item.
+
+## Conceitos praticados
+
+- db/schema.cds para modelo persistido.
+- Views CDS para leitura otimizada.
+- srv/*.cds para contrato público.
+- srv/*.js para regras de negócio.
+- before READ para mexer em req.query.
+- before SAVE para validações finais em draft.
+- on action para lógica transacional.
+- SELECT.from(...).forUpdate() para lock.
+- Filtro virtual de Fiori convertido em EXISTS.
+- Action em entidade individual.
+- Action em entidade de lote.
+- Testes manuais via .http.
+- Debug local com breakpoints.
+
+## Premissas
+
+- O desenvolvedor já concluiu o desafio anterior.
+- O projeto continua local.
+- Não precisa de SAP BTP.
+- Não precisa de HANA.
+- Use SQLite para desenvolvimento.
+- Use SAP Fiori elements.
+- Use Node.js e CAP Node.js.
+- Use VS Code dentro do WSL.
+
+## Resultado esperado
+
+### Estrutura sugerida
+
+```text
+liberacao-ordens/
+├── app/
+│   ├── ordens/
+│   │   ├── annotations.cds
+│   │   └── webapp/
+│   └── lotes/
+│       ├── annotations.cds
+│       └── webapp/
+├── db/
+│   ├── data/
+│   │   ├── desafio.ordens-Centros.csv
+│   │   ├── desafio.ordens-Depositos.csv
+│   │   ├── desafio.ordens-Estoques.csv
+│   │   ├── desafio.ordens-LocaisInstalacao.csv
+│   │   ├── desafio.ordens-Materiais.csv
+│   │   ├── desafio.ordens-Ordens.csv
+│   │   ├── desafio.ordens-Prioridades.csv
+│   │   ├── desafio.ordens-ReservasMateriais.csv
+│   │   ├── desafio.ordens-ResponsabilidadesOrdem.csv
+│   │   ├── desafio.ordens-StatusItemLote.csv
+│   │   ├── desafio.ordens-StatusLote.csv
+│   │   ├── desafio.ordens-StatusOrdem.csv
+│   │   └── desafio.ordens-Usuarios.csv
+│   └── schema.cds
+├── srv/
+│   ├── planejamento-service.cds
+│   └── planejamento-service.js
+├── test/
+│   └── http/
+│       └── planejamento.http
+├── .vscode/
+│   └── launch.json
+├── package.json
+└── README.md
+```
+
+## 1. Criar o projeto
+
+```bash
+cd ~/projetos/estudos
+cds init liberacao-ordens --nodejscd liberacao-ordens
+npm install
+cds add sqlite --for development
+npm install
+```
+
+### Configure autenticação mockada em package.json
+
+```json
+{
+  "cds": {
+    "requires": {
+      "auth": {
+        "kind": "mocked",
+        "users": {
+          "100001": {
+            "password": "dev",
+            "roles": ["authenticated-user"]
+          },
+          "100002": {
+            "password": "dev",
+            "roles": ["authenticated-user"]
+          },
+          "admin": {
+            "password": "admin",
+            "roles": ["authenticated-user", "admin"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Critério de aceite
+
+- cds compile . --to csn passa.
+- cds watch sobe.
+- A página local abre.
+
+## 2. Criar o modelo persistido
+
+Crie db/schema.cds:
+
+```cds
+namespace desafio.ordens;
+
+using { cuid, managed } from '@sap/cds/common';
+
+@cds.odata.valuelist
+entity StatusOrdem {
+  key code  : String(20);
+      texto : String(80) not null;
+}
+
+@cds.odata.valuelist
+entity Prioridades {
+  key code  : String(10);
+      texto : String(80) not null;
+      peso  : Integer not null;
+}
+
+@cds.odata.valuelist
+entity StatusLote {
+  key code  : String(20);
+      texto : String(80) not null;
+}
+
+@cds.odata.valuelist
+entity StatusItemLote {
+  key code  : String(20);
+      texto : String(80) not null;
+}
+
+@cds.odata.valuelist
+entity Usuarios {
+  key matricula : String(20);
+      nome      : String(100) not null;
+      email     : String(120);
+      ativo     : Boolean default true;
+}
+
+@cds.odata.valuelist
+entity Centros : cuid {
+  codigo : String(10) not null;
+  nome   : String(80) not null;
+}
+
+@cds.odata.valuelist
+entity LocaisInstalacao : cuid {
+  codigo : String(40) not null;
+  nome   : String(120) not null;
+  centro : Association to Centros not null;
+  ativo  : Boolean default true;
+}
+
+@cds.odata.valuelist
+entity Depositos : cuid {
+  codigo : String(10) not null;
+  nome   : String(80) not null;
+  centro : Association to Centros not null;
+}
+
+@cds.odata.valuelist
+entity Materiais : cuid {
+  codigo     : String(30) not null;
+  descricao  : String(120) not null;
+  unidade    : String(3) default 'UN';
+  precoMedio : Decimal(13,2) default 0;
+  ativo      : Boolean default true;
+}
+
+entity Estoques : cuid, managed {
+  material              : Association to Materiais not null;
+  deposito              : Association to Depositos not null;
+  quantidadeDisponivel  : Decimal(13,3) default 0;
+  quantidadeReservada   : Decimal(13,3) default 0;
+}
+
+entity Ordens : cuid, managed {
+  codigo               : String(30) not null;
+  descricao            : String(160) not null;
+  centro               : Association to Centros not null;
+  localInstalacao      : Association to LocaisInstalacao not null;
+  responsavel          : Association to Usuarios not null;
+  status               : Association to StatusOrdem default 'ABERTA';
+  prioridade           : Association to Prioridades default 'MEDIA';
+  dataInicioPlanejada  : DateTime not null;
+  dataFimPlanejada     : DateTime not null;
+  valorEstimado        : Decimal(13,2) default 0;
+  observacao           : String(500);
+
+  reservas             : Composition of many ReservasMateriais
+                           on reservas.ordem = $self;
+
+  responsabilidades    : Composition of many ResponsabilidadesOrdem
+                           on responsabilidades.ordem = $self;
+}
+
+entity ReservasMateriais : cuid, managed {
+  ordem                : Association to Ordens not null;
+  material             : Association to Materiais not null;
+  deposito             : Association to Depositos not null;
+  quantidadeNecessaria : Decimal(13,3) not null @assert.range: [0.001, 100000];
+}
+
+entity ResponsabilidadesOrdem : cuid {
+  ordem   : Association to Ordens not null;
+  usuario : Association to Usuarios not null;
+  papel   : String(30) not null;
+}
+
+entity LotesLiberacao : cuid, managed {
+  codigo       : String(30) not null;
+  descricao    : String(160);
+  status       : Association to StatusLote default 'ABERTO';
+  solicitadoPor: Association to Usuarios;
+
+  itens        : Composition of many ItensLoteLiberacao
+                   on itens.lote = $self;
+}
+
+entity ItensLoteLiberacao : cuid, managed {
+  lote       : Association to LotesLiberacao not null;
+  ordem      : Association to Ordens not null;
+  status     : Association to StatusItemLote default 'PENDENTE';
+  mensagem   : String(500);
+  processado : Boolean default false;
+}
+
+entity MovimentosEstoque : cuid, managed {
+  ordem      : Association to Ordens;
+  material   : Association to Materiais not null;
+  deposito   : Association to Depositos not null;
+  quantidade : Decimal(13,3) not null;
+  tipo       : String(20) not null;
+  origem     : String(40);
+}
+
+view V_ReservasPorOrdem as select from ReservasMateriais as reserva {
+  key reserva.ordem.ID as ordem_ID,
+      count(*) as totalReservas,
+      sum(reserva.quantidadeNecessaria) as quantidadeTotal
+} group by reserva.ordem.ID;
+
+view V_AcessosOrdem as select from ResponsabilidadesOrdem as responsabilidade {
+  key responsabilidade.ordem.ID as ordem_ID,
+  key responsabilidade.usuario.matricula as matricula,
+      responsabilidade.papel as papel
+};
+
+view V_OrdensComResumo as select from Ordens as ordem
+  left join V_ReservasPorOrdem as resumo
+    on resumo.ordem_ID = ordem.ID
+{
+  key ordem.ID,
+      ordem.codigo,
+      ordem.descricao,
+      ordem.status.code as statusCode,
+      ordem.status.texto as statusTexto,
+      ordem.prioridade.code as prioridadeCode,
+      ordem.prioridade.texto as prioridadeTexto,
+      ordem.centro.codigo as centroCodigo,
+      ordem.centro.nome as centroNome,
+      ordem.localInstalacao.codigo as localInstalacaoCodigo,
+      ordem.localInstalacao.nome as localInstalacaoNome,
+      ordem.responsavel.matricula as responsavelMatricula,
+      ordem.responsavel.nome as responsavelNome,
+      ordem.dataInicioPlanejada,
+      ordem.dataFimPlanejada,
+      ordem.valorEstimado,
+      resumo.totalReservas,
+      resumo.quantidadeTotal
+};
+```
+
+### Pontos importantes
+
+- Ordens é a entidade principal.
+- ReservasMateriais é composição da ordem.
+- ResponsabilidadesOrdem define visibilidade.
+- V_AcessosOrdem será usada no where exists.
+- V_OrdensComResumo será usada para consultas técnicas e relatórios.
+- A UI principal usa a projeção Ordens.
+
+### Valide
+
+```bash
+cds compile db/schema.cds --to sql
+```
+
+### Critério de aceite
+
+- O SQL é gerado.
+- As views aparecem no SQL.
+- Não há erro de sintaxe CDS.
+
+## 3. Criar dados iniciais
+
+Crie db/data.
+
+```bash
+mkdir -p db/data
+```
+
+### Crie pelo menos
+
+- 2 usuários;
+- 2 centros;
+- 2 depósitos;
+- 4 materiais;
+- 3 ordens;
+- reservas para cada ordem;
+- responsabilidades para cada ordem;
+- uma ordem com estoque suficiente;
+- uma ordem com estoque insuficiente;
+- uma ordem sem acesso para o usuário 100001.
+
+### Exemplo mínimo de status
+
+#### `db/data/desafio.ordens-StatusOrdem.csv`
+
+```csv
+code;texto
+ABERTA;Aberta
+LIBERADA;Liberada
+CANCELADA;Cancelada
+BLOQUEADA;Bloqueada
+```
+
+#### `db/data/desafio.ordens-Prioridades.csv`
+
+```csv
+code;texto;peso
+BAIXA;Baixa;1
+MEDIA;Média;2
+ALTA;Alta;3
+CRITICA;Crítica;4
+```
+
+#### `db/data/desafio.ordens-StatusLote.csv`
+
+```csv
+code;texto
+ABERTO;Aberto
+PROCESSADO;Processado
+PROCESSADO_COM_ERRO;Processado com erro
+```
+
+#### `db/data/desafio.ordens-StatusItemLote.csv`
+
+```csv
+code;texto
+PENDENTE;Pendente
+SUCESSO;Sucesso
+ERRO;Erro
+```
+
+### Critério de aceite
+
+- cds deploy --to sqlite carrega os CSVs.
+- cds watch mostra as entidades com dados.
+- Os UUIDs usam apenas caracteres hexadecimais.
+
+## 4. Criar o serviço OData
+
+Crie srv/planejamento-service.cds:
+
+```cds
+using { desafio.ordens as db } from '../db/schema';
+
+service PlanejamentoService @(path: '/planejamento') {
+
+  @odata.draft.enabled
+  entity Ordens as projection on db.Ordens {
+    *,
+    virtual comRiscoEstoque : Boolean
+  } actions {
+    action liberarOrdem() returns Ordens;
+    action cancelarOrdem(motivo: String(255)) returns Ordens;
+  };
+
+  entity ReservasMateriais as projection on db.ReservasMateriais;
+
+  @readonly
+  entity OrdensLista as projection on db.V_OrdensComResumo;
+
+  @readonly
+  entity AcessosOrdem as projection on db.V_AcessosOrdem;
+
+  @odata.draft.enabled
+  entity LotesLiberacao as projection on db.LotesLiberacao actions {
+    action processarLote() returns LotesLiberacao;
+  };
+
+  entity ItensLoteLiberacao as projection on db.ItensLoteLiberacao;
+
+  @readonly entity Usuarios as projection on db.Usuarios;
+  @readonly entity Centros as projection on db.Centros;
+  @readonly entity LocaisInstalacao as projection on db.LocaisInstalacao;
+  @readonly entity Depositos as projection on db.Depositos;
+  @readonly entity Materiais as projection on db.Materiais;
+  @readonly entity StatusOrdem as projection on db.StatusOrdem;
+  @readonly entity Prioridades as projection on db.Prioridades;
+  @readonly entity StatusLote as projection on db.StatusLote;
+  @readonly entity StatusItemLote as projection on db.StatusItemLote;
+}
+```
+
+### Pontos importantes
+
+- Ordens é draft-enabled para edição Fiori.
+- OrdensLista é uma consulta técnica otimizada.
+- comRiscoEstoque é virtual.
+- O filtro de comRiscoEstoque será resolvido no handler.
+- AcessosOrdem não precisa aparecer como app.
+- LotesLiberacao terá action própria.
+
+### Valide
+
+```bash
+cds compile srv/planejamento-service.cds --to edmx
+```
+
+### Critério de aceite
+
+- O EDMX é gerado.
+- Ordens aparece com actions.
+- LotesLiberacao aparece com action.
+- Ordens aparece com comRiscoEstoque.
+- OrdensLista aparece como projeção de leitura.
+
+## 5. Criar anotações Fiori
+
+Crie app/ordens/annotations.cds.
+
+### Objetivo da tela
+
+- listar ordens;
+- filtrar por centro;
+- filtrar por prioridade;
+- filtrar por status;
+- filtrar por risco de estoque;
+- abrir detalhe da ordem;
+- executar action de liberação.
+
+### Exemplo base
+
+```cds
+using PlanejamentoService as service from '../../srv/planejamento-service';
+
+annotate service.Ordens with @(
+  UI: {
+    HeaderInfo: {
+      TypeName: 'Ordem',
+      TypeNamePlural: 'Ordens',
+      Title: { Value: codigo },
+      Description: { Value: descricao }
+    },
+    SelectionFields: [
+      codigo,
+      centro_ID,
+      status_code,
+      prioridade_code,
+      comRiscoEstoque
+    ],
+    LineItem: [
+      { Value: codigo, Label: 'Ordem' },
+      { Value: descricao, Label: 'Descrição' },
+      { Value: centro.codigo, Label: 'Centro' },
+      { Value: localInstalacao.codigo, Label: 'Local' },
+      { Value: responsavel.nome, Label: 'Responsável' },
+      { Value: status.texto, Label: 'Status' },
+      { Value: prioridade.texto, Label: 'Prioridade' },
+      { Value: dataInicioPlanejada, Label: 'Início' },
+      { Value: dataFimPlanejada, Label: 'Fim' }
+    ]
+  }
+);
+
+annotate service.Ordens with @(
+  UI: {
+    HeaderInfo: {
+      TypeName: 'Ordem',
+      TypeNamePlural: 'Ordens',
+      Title: { Value: codigo },
+      Description: { Value: descricao }
+    },
+    Facets: [
+      {
+        $Type: 'UI.ReferenceFacet',
+        Label: 'Dados gerais',
+        Target: '@UI.FieldGroup#DadosGerais'
+      },
+      {
+        $Type: 'UI.ReferenceFacet',
+        Label: 'Planejamento',
+        Target: '@UI.FieldGroup#Planejamento'
+      },
+      {
+        $Type: 'UI.ReferenceFacet',
+        Label: 'Reservas',
+        Target: 'reservas/@UI.LineItem'
+      }
+    ],
+    FieldGroup #DadosGerais: {
+      Data: [
+        { Value: codigo, Label: 'Ordem' },
+        { Value: descricao, Label: 'Descrição' },
+        { Value: centro_ID, Label: 'Centro' },
+        { Value: localInstalacao_ID, Label: 'Local de instalação' },
+        { Value: responsavel_matricula, Label: 'Responsável' },
+        { Value: status_code, Label: 'Status' },
+        { Value: prioridade_code, Label: 'Prioridade' }
+      ]
+    },
+    FieldGroup #Planejamento: {
+      Data: [
+        { Value: dataInicioPlanejada, Label: 'Início planejado' },
+        { Value: dataFimPlanejada, Label: 'Fim planejado' },
+        { Value: valorEstimado, Label: 'Valor estimado' },
+        { Value: observacao, Label: 'Observação' }
+      ]
+    }
+  }
+);
+
+annotate service.ReservasMateriais with @(
+  UI: {
+    LineItem: [
+      { Value: material_ID, Label: 'Material' },
+      { Value: deposito_ID, Label: 'Depósito' },
+      { Value: quantidadeNecessaria, Label: 'Quantidade' }
+    ]
+  }
+);
+```
+
+Crie app/lotes/annotations.cds.
+
+### Objetivo da tela
+
+- criar lote;
+- adicionar ordens;
+- processar lote;
+- ver resultado por item.
+
+### Critério de aceite
+
+- cds compile . --to edmx passa.
+- O preview Fiori mostra colunas úteis.
+- O filtro Com risco de estoque aparece na lista.
+- O Object Page mostra reservas.
+- OrdensLista permanece disponível para consulta técnica via OData.
+
+## 6. Gerar apps Fiori elements
+
+Gere dois apps.
+
+### App 1
+
+Module name: ordens
+Application title: Liberação de Ordens
+Application namespace: treinamento.cap
+Main entity: Ordens
+Navigation entity: ReservasMateriais
+
+### App 2
+
+Module name: lotes
+Application title: Lotes de Liberação
+Application namespace: treinamento.cap
+Main entity: LotesLiberacao
+Navigation entity: ItensLoteLiberacao
+
+### Critério de aceite
+
+- app/ordens/webapp/manifest.json existe.
+- app/lotes/webapp/manifest.json existe.
+- Os dois apps aparecem no CAP.
+- A lista de ordens abre.
+- A lista de lotes abre.
+
+## 7. Implementar handlers
+
+Crie srv/planejamento-service.js.
+
+### Comece com esta estrutura
+
+```javascript
+const cds = require("@sap/cds");
+const { SELECT, UPDATE, INSERT } = cds.ql;
+module.exports = class PlanejamentoService extends cds.ApplicationService {
+  async init() {
+    const { Ordens, LotesLiberacao } = this.entities;
+
+    this.before("READ", Ordens, this.aplicarEscopoDeLeitura);
+    this.before("READ", Ordens, this.aplicarFiltroDeRiscoEstoque);
+
+    this.before(["CREATE", "UPDATE"], Ordens.drafts, this.validarPeriodoDaOrdem);
+    this.before("SAVE", Ordens, this.validarOrdemAntesDeSalvar);
+
+    this.on("liberarOrdem", Ordens, this.liberarOrdem);
+    this.on("cancelarOrdem", Ordens, this.cancelarOrdem);
+    this.on("processarLote", LotesLiberacao, this.processarLote);
+
+    return super.init();
+  }
+};
+```
+
+### Ponto importante
+
+- Use funções nomeadas.
+- Evite handlers anônimos para facilitar debug.
+- Os métodos são chamados com this transacional.
+
+## 8. Handler before: validação simples
+
+Implemente validarPeriodoDaOrdem.
+
+### Regras
+
+- dataInicioPlanejada é obrigatória.
+- dataFimPlanejada é obrigatória.
+- fim deve ser maior que início.
+- valorEstimado não pode ser negativo.
+
+### Exemplo
+
+```javascript
+validarPeriodoDaOrdem(req) {
+  const inicio = req.data.dataInicioPlanejada;
+  const fim = req.data.dataFimPlanejada;
+
+  if (inicio && fim && new Date(fim) <= new Date(inicio))
+    req.error(400, "Fim planejado deve ser maior que início planejado", "dataFimPlanejada");
+
+  if (req.data.valorEstimado < 0)
+    req.error(400, "Valor estimado não pode ser negativo", "valorEstimado");
+}
+```
+
+Implemente também validarOrdemAntesDeSalvar.
+Ela deve repetir as validações essenciais antes da ativação do draft:
+
+```javascript
+validarOrdemAntesDeSalvar(req) {
+  this.validarPeriodoDaOrdem(req);
+}
+```
+
+### Critério de aceite
+
+- A UI mostra erro ao salvar período inválido.
+- A requisição HTTP também falha.
+- O breakpoint para nesse método.
+
+## 9. Handler before READ: escopo por usuário
+
+### Implemente a regra
+
+- usuário admin vê tudo;
+- usuário comum só vê ordem com registro em V_AcessosOrdem;
+- o filtro deve ser aplicado no banco;
+- não busque todos os IDs em memória;
+- use EXISTS correlacionado.
+
+### Exemplo didático
+
+```javascript
+aplicarEscopoDeLeitura(req) {
+  if (req.user?.is("admin"))
+    return;
+
+  const matricula = req.user?.id;
+  if (!matricula || !req.query?.SELECT)
+    return;
+
+  const alias = this.garantirAlias(req.query, "ordem");
+  const filtroAcesso = this.montarExistsAcessoOrdem(matricula, alias);
+  const whereAtual = req.query.SELECT.where;
+
+  req.query.SELECT.where = Array.isArray(whereAtual) && whereAtual.length    ? ["(", ...whereAtual, ")", "and", filtroAcesso]
+    : [filtroAcesso];
+}
+garantirAlias(query, fallback) {
+  const from = query?.SELECT?.from;
+
+  if (!from || typeof from !== "object")
+    return fallback;
+
+  if (!from.as)
+    from.as = fallback;
+
+  return from.as;
+}
+montarExistsAcessoOrdem(matricula, aliasOrdem) {
+  return {
+    xpr: [
+      "exists",
+      SELECT.from("desafio.ordens.V_AcessosOrdem").alias("acesso")
+        .columns({ val: 1 })
+        .where([
+          { ref: ["acesso", "ordem_ID"] }, "=", { ref: [aliasOrdem, "ID"] },
+          "and",
+          { ref: ["acesso", "matricula"] }, "=", { val: matricula }
+        ])
+    ]
+  };
+}
+```
+
+### O que aprender aqui
+
+- req.query é CQN.
+- before READ pode alterar a consulta.
+- EXISTS evita materializar lista de IDs.
+- O banco resolve a visibilidade linha a linha.
+- O filtro original da UI é preservado.
+
+### Critério de aceite
+
+- Com usuário 100001, aparecem só ordens autorizadas.
+- Com usuário 100002, aparece outro conjunto.
+- Com usuário admin, aparecem todas.
+- O SQL gerado contém predicado adicional.
+
+## 10. Handler before READ: filtro virtual com where exists
+
+O campo comRiscoEstoque não existe no banco.
+Ele existe para a UI.
+Quando o usuário filtrar comRiscoEstoque = true, o backend deve trocar isso por:
+existe reserva da ordem
+e o estoque disponível do material/depósito é menor que a quantidade necessária
+
+### Tarefa
+
+1. detectar filtro comRiscoEstoque eq true;
+2. remover esse filtro do WHERE;
+3. adicionar um EXISTS contra ReservasMateriais;
+4. correlacionar a reserva com a ordem da lista;
+5. comparar estoque disponível com quantidade necessária.
+
+### Pseudocódigo
+
+```javascript
+aplicarFiltroDeRiscoEstoque(req) {
+  const where = req.query?.SELECT?.where;
+  if (!Array.isArray(where))
+    return;
+
+  if (!this.possuiFiltroBooleano(where, "comRiscoEstoque", true))
+    return;
+
+  const alias = this.garantirAlias(req.query, "ordem");
+  const whereSemVirtual = this.removerFiltroDoCampo(where, "comRiscoEstoque");
+  const existsRisco = this.montarExistsRiscoEstoque(alias);
+
+  req.query.SELECT.where = whereSemVirtual.length    ? ["(", ...whereSemVirtual, ")", "and", existsRisco]
+    : [existsRisco];
+}
+```
+
+### Exemplo de EXISTS
+
+```javascript
+montarExistsRiscoEstoque(aliasOrdem) {
+  return {
+    xpr: [
+      "exists",
+      SELECT.from("desafio.ordens.ReservasMateriais").alias("reserva")
+        .columns({ val: 1 })
+        .where([
+          { ref: ["reserva", "ordem_ID"] }, "=", { ref: [aliasOrdem, "ID"] },
+          "and",
+          {
+            xpr: [
+              "exists",
+              SELECT.from("desafio.ordens.Estoques").alias("estoque")
+                .columns({ val: 1 })
+                .where([
+                  { ref: ["estoque", "material_ID"] }, "=", { ref: ["reserva", "material_ID"] },
+                  "and",
+                  { ref: ["estoque", "deposito_ID"] }, "=", { ref: ["reserva", "deposito_ID"] },
+                  "and",
+                  { ref: ["estoque", "quantidadeDisponivel"] }, "<", { ref: ["reserva", "quantidadeNecessaria"] }
+                ])
+            ]
+          }
+        ])
+    ]
+  };
+}
+```
+
+### Critério de aceite
+
+- Sem filtro, a lista mostra ordens visíveis ao usuário.
+- Com Com risco de estoque = true, só aparecem ordens com falta.
+- Não ocorre erro sobre coluna inexistente comRiscoEstoque.
+- Os demais filtros da UI continuam funcionando.
+
+## 11. Action individual com forUpdate
+
+Implemente liberarOrdem.
+
+### Contrato
+
+```cds
+action liberarOrdem() returns Ordens;
+```
+
+### Comportamento
+
+1. pegar ID de req.params[0];
+2. buscar a ordem com forUpdate();
+3. rejeitar se não existir;
+4. rejeitar se não estiver ABERTA;
+5. buscar reservas da ordem;
+6. rejeitar se não houver reserva;
+7. bloquear os registros de estoque;
+8. validar saldo;
+9. baixar estoque;
+10. criar movimentos de estoque;
+11. atualizar status para LIBERADA;
+12. retornar a ordem atualizada.
+
+### Esqueleto
+
+```javascript
+async liberarOrdem(req) {
+  const { ID } = req.params[0];
+  await this.liberarOrdemPorID(ID, req);
+
+  return SELECT.one.from(this.entities.Ordens).where({ ID });
+}
+async liberarOrdemPorID(ID, req) {
+  const { Ordens, ReservasMateriais } = this.entities;
+  const { Estoques, MovimentosEstoque } = cds.entities("desafio.ordens");
+
+  const ordem = await SELECT.one.from(Ordens)
+    .where({ ID })
+    .forUpdate();
+
+  if (!ordem)
+    req.reject(404, "Ordem não encontrada");
+
+  if (ordem.status_code !== "ABERTA")
+    req.reject(409, `Ordem ${ordem.codigo} não está aberta`);
+
+  const reservas = await SELECT.from(ReservasMateriais)
+    .where({ ordem_ID: ID });
+
+  if (!reservas.length)
+    req.reject(409, `Ordem ${ordem.codigo} não possui reservas`);
+
+  for (const reserva of reservas) {
+    const estoque = await SELECT.one.from(Estoques)
+      .where({
+        material_ID: reserva.material_ID,
+        deposito_ID: reserva.deposito_ID      })
+      .forUpdate();
+
+    if (!estoque || Number(estoque.quantidadeDisponivel) < Number(reserva.quantidadeNecessaria))
+      req.reject(409, `Estoque insuficiente para a ordem ${ordem.codigo}`);
+
+    await UPDATE(Estoques, estoque.ID).with({
+      quantidadeDisponivel: Number(estoque.quantidadeDisponivel) - Number(reserva.quantidadeNecessaria),
+      quantidadeReservada: Number(estoque.quantidadeReservada || 0) + Number(reserva.quantidadeNecessaria)
+    });
+
+    await INSERT.into(MovimentosEstoque).entries({
+      ordem_ID: ID,
+      material_ID: reserva.material_ID,
+      deposito_ID: reserva.deposito_ID,
+      quantidade: reserva.quantidadeNecessaria,
+      tipo: "RESERVA",
+      origem: "liberarOrdem"    });
+  }
+
+  await UPDATE(Ordens, ID).with({
+    status_code: "LIBERADA"  });
+}
+```
+
+### Pontos importantes
+
+- A action não deve confiar no estado visto pela UI.
+- A action deve reler a ordem no backend.
+- O lock deve acontecer antes da decisão.
+- A transação do request CAP envolve as operações internas.
+- O retorno atualizado ajuda a UI a refrescar a tela.
+
+### Critério de aceite
+
+- Liberar ordem aberta com estoque suficiente funciona.
+- Liberar ordem com estoque insuficiente falha.
+- Liberar ordem já liberada falha.
+- A action aparece no metadata.
+- A action aparece no Fiori.
+- O estoque muda após sucesso.
+- O movimento é criado após sucesso.
+
+## 12. Action de cancelamento
+
+Implemente cancelarOrdem.
+
+### Regras
+
+- exige motivo;
+- só cancela ordem ABERTA;
+- usa forUpdate();
+- atualiza status para CANCELADA;
+- grava observação com o motivo.
+
+### Critério de aceite
+
+- Sem motivo, retorna erro 400.
+- Ordem liberada não pode ser cancelada.
+- Ordem aberta é cancelada.
+- A UI mostra status atualizado.
+
+## 13. Lógica de lote
+
+O lote serve para treinar processamento parcial.
+Implemente processarLote.
+
+### Regras
+
+- só processa lote ABERTO;
+- usa forUpdate() no lote;
+- busca itens pendentes;
+- para cada item:
+  - tenta liberar a ordem;
+  - se der certo, marca item como SUCESSO;
+  - se falhar, marca item como ERRO;
+  - grava mensagem do erro;
+- no final:
+  - se todos deram certo, lote vira PROCESSADO;
+  - se algum falhou, lote vira PROCESSADO_COM_ERRO;
+- retorna o lote atualizado.
+
+### Esqueleto
+
+```javascript
+async processarLote(req) {
+  const { ID } = req.params[0];
+  const { LotesLiberacao, ItensLoteLiberacao } = this.entities;
+
+  const lote = await SELECT.one.from(LotesLiberacao)
+    .where({ ID })
+    .forUpdate();
+
+  if (!lote)
+    req.reject(404, "Lote não encontrado");
+
+  if (lote.status_code !== "ABERTO")
+    req.reject(409, "Lote já foi processado");
+
+  const itens = await SELECT.from(ItensLoteLiberacao)
+    .where({ lote_ID: ID, status_code: "PENDENTE" });
+
+  if (!itens.length)
+    req.reject(409, "Lote não possui itens pendentes");
+
+  let sucessos = 0;
+  let erros = 0;
+
+  for (const item of itens) {
+    try {
+      await this.liberarOrdemPorID(item.ordem_ID, req);
+
+      await UPDATE(ItensLoteLiberacao, item.ID).with({
+        status_code: "SUCESSO",
+        processado: true,
+        mensagem: "Ordem liberada"      });
+
+      sucessos += 1;
+    } catch (error) {
+      await UPDATE(ItensLoteLiberacao, item.ID).with({
+        status_code: "ERRO",
+        processado: true,
+        mensagem: error.message || "Erro ao liberar ordem"      });
+
+      erros += 1;
+    }
+  }
+
+  await UPDATE(LotesLiberacao, ID).with({
+    status_code: erros > 0 ? "PROCESSADO_COM_ERRO" : "PROCESSADO"  });
+
+  return SELECT.one.from(LotesLiberacao).where({ ID });
+}
+```
+
+### Discussão obrigatória
+
+- O lote deve parar no primeiro erro ou continuar?
+- O lote deve ser tudo-ou-nada?
+- O item com erro pode ser reprocessado?
+- Como evitar liberar a mesma ordem duas vezes?
+- Como testar concorrência localmente?
+
+### Critério de aceite
+
+- Lote com duas ordens válidas processa tudo.
+- Lote com uma ordem sem estoque gera sucesso parcial.
+- Item com erro tem mensagem.
+- Lote fica PROCESSADO_COM_ERRO.
+- Reprocessar o mesmo lote falha.
+
+## 14. Debug local no VS Code
+
+Crie .vscode/launch.json:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach CAP local",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true,
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
+```
+
+### Fluxo recomendado
+
+1. Abra o terminal integrado do VS Code.
+2. Execute cds watch.
+3. Digite debug no terminal do cds watch.
+4. Inicie a configuração Attach CAP local.
+5. Coloque breakpoints em planejamento-service.js.
+6. Dispare a action pelo Fiori ou pelo .http.
+
+### Breakpoints obrigatórios
+
+- aplicarEscopoDeLeitura;
+- aplicarFiltroDeRiscoEstoque;
+- validarPeriodoDaOrdem;
+- liberarOrdem;
+- liberarOrdemPorID;
+- processarLote.
+
+### O que observar no debug
+
+- req.user.id;
+- req.event;
+- req.target.name;
+- req.params;
+- req.data;
+- req.query.SELECT.where;
+- req.query.SELECT.from.as;
+- resultado de SELECT.one(...).forUpdate().
+
+### Critério de aceite
+
+- O VS Code para no breakpoint.
+- Você consegue inspecionar req.query.
+- Você vê o WHERE antes e depois do handler.
+- Você executa a action passo a passo.
+
+## 15. Testes HTTP manuais
+
+Instale a extensão REST Client no VS Code.
+Crie test/http/planejamento.http:
+
+```http
+@host = http://localhost:4004
+@service = {{host}}/odata/v4/planejamento
+@authUser = 100001
+@authPass = dev
+
+### Metadata
+GET {{service}}/$metadata
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Lista com escopo do usuário
+GET {{service}}/Ordens?$select=ID,codigo,status_code,responsavel_matricula&$top=20
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Lista com filtro virtual convertido em EXISTS
+GET {{service}}/Ordens?$filter=comRiscoEstoque eq true&$select=ID,codigo,status_code
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Ordem por ID
+GET {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)
+Authorization: Basic {{authUser}} {{authPass}}
+
+### Liberar ordem
+POST {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)/liberarOrdem
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{}
+
+### Cancelar ordem
+POST {{service}}/Ordens(ID={{ordemID}},IsActiveEntity=true)/cancelarOrdem
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{
+  "motivo": "Cancelamento de teste local"
+}
+
+### Processar lote
+POST {{service}}/LotesLiberacao(ID={{loteID}},IsActiveEntity=true)/processarLote
+Content-Type: application/json
+Authorization: Basic {{authUser}} {{authPass}}
+
+{}
+```
+
+### Preencha
+
+```http
+@ordemID = coloque-um-uuid-aqui
+@loteID = coloque-um-uuid-aqui
+```
+
+### Critério de aceite
+
+- O metadata responde.
+- A lista respeita o usuário.
+- O filtro virtual retorna só ordens com risco.
+- A action individual funciona.
+- A action de lote funciona.
+- Erros aparecem com status HTTP adequado.
+
+## 16. Testes que devem falhar
+
+Execute cenários negativos.
+
+### Ordem inexistente
+
+### Esperado
+
+- HTTP 404.
+- Mensagem clara.
+
+### Ordem sem estoque
+
+### Esperado
+
+- HTTP 409.
+- Nenhum estoque é baixado.
+- Nenhum movimento é criado.
+
+### Ordem já liberada
+
+### Esperado
+
+- HTTP 409.
+- Status permanece LIBERADA.
+
+### Lote já processado
+
+### Esperado
+
+- HTTP 409.
+- Nenhum item muda.
+
+### Usuário sem acesso
+
+### Esperado
+
+- A ordem não aparece em Ordens.
+- Se chamar action direta, o backend deve rejeitar.
+
+### Melhoria obrigatória
+
+- Adicione validação de acesso também dentro de liberarOrdemPorID.
+- Não proteja apenas a lista.
+
+## 17. Verificação de metadata
+
+Gere o EDMX:
+
+```bash
+cds compile . --to edmx > /tmp/liberacao-ordens.edmx
+```
+
+Procure:
+
+```bash
+rg "liberarOrdem|cancelarOrdem|processarLote|comRiscoEstoque" /tmp/liberacao-ordens.edmx
+```
+
+### Critério de aceite
+
+- As três actions aparecem.
+- comRiscoEstoque aparece.
+- OrdensLista aparece.
+- LotesLiberacao aparece.
+
+## 18. Entender o desenho técnico
+
+### Responda com suas palavras
+
+- Por que Ordens é persistida?
+- Por que OrdensLista é view/projeção?
+- Por que comRiscoEstoque é virtual?
+- Por que o filtro virtual precisa de handler?
+- Por que usar EXISTS em vez de buscar IDs antes?
+- Por que aplicar escopo no backend?
+- Por que action deve reler a ordem?
+- Por que usar forUpdate() antes de liberar?
+- Qual diferença entre before, on e after?
+- O que pode dar errado em lote parcial?
+- Qual URL expõe o OData?
+- Qual URL abre cada app Fiori?
+
+## 19. Melhorias obrigatórias
+
+### Melhoria 1: filtro por responsabilidade indireta
+
+Adicione delegação.
+
+### Nova entidade
+
+```cds
+entity Delegacoes : cuid {
+  titular  : Association to Usuarios not null;
+  delegado : Association to Usuarios not null;
+  validoDe : Date;
+  validoAte: Date;
+  ativo    : Boolean default true;
+}
+```
+
+Altere V_AcessosOrdem ou crie V_AcessosOrdemEfetivos.
+
+### Regra
+
+- usuário vê ordens próprias;
+- usuário vê ordens em que é delegado ativo;
+- usuário não vê delegação vencida.
+
+### Critério de aceite
+
+- 100002 vê ordem do titular quando delegação está ativa.
+- Delegação vencida não dá acesso.
+- O handler continua usando EXISTS.
+
+### Melhoria 2: action para reabrir ordem
+
+### Crie
+
+```cds
+action reabrirOrdem(motivo: String(255)) returns Ordens;
+```
+
+### Regras
+
+- só reabre ordem CANCELADA;
+- exige motivo;
+- usa forUpdate();
+- volta status para ABERTA.
+
+### Critério de aceite
+
+- Reabrir ordem cancelada funciona.
+- Reabrir ordem liberada falha.
+- Metadata mostra action.
+
+### Melhoria 3: lote reprocessável
+
+### Crie action
+
+```cds
+action reabrirItensComErro() returns LotesLiberacao;
+```
+
+### Regras
+
+- apenas lote PROCESSADO_COM_ERRO;
+- itens ERRO voltam para PENDENTE;
+- itens SUCESSO permanecem como estão;
+- lote volta para ABERTO.
+
+### Critério de aceite
+
+- Apenas itens com erro voltam.
+- Lote pode ser processado novamente.
+- Ordem já liberada não deve ser liberada de novo.
+
+## 20. Entrega esperada
+
+### Envie
+
+- print da lista de ordens;
+- print do filtro Com risco de estoque;
+- print do detalhe da ordem;
+- print da action no Fiori;
+- print do lote processado;
+- arquivo .http;
+- resposta da seção 18;
+- diff dos arquivos alterados;
+- explicação curta do where exists;
+- explicação curta do forUpdate.
+
+## 21. Checklist final
+
+- [ ] cds compile . --to csn passa.
+- [ ] cds compile . --to edmx passa.
+- [ ] cds deploy --to sqlite carrega CSVs.
+- [ ] cds watch sobe.
+- [ ] App de ordens abre.
+- [ ] App de lotes abre.
+- [ ] Lista respeita escopo do usuário.
+- [ ] Filtro virtual funciona.
+- [ ] Action individual funciona.
+- [ ] Action individual falha nos cenários inválidos.
+- [ ] Action de lote funciona.
+- [ ] Lote registra erro por item.
+- [ ] Debug para nos breakpoints.
+- [ ] Testes HTTP executam.
+
+## 22. Problemas comuns
+
+### Erro em coluna comRiscoEstoque
+
+O handler não removeu o filtro virtual.
+
+### Revise
+
+- detecção do campo;
+- remoção do predicado;
+- montagem do EXISTS.
+
+### Lista mostra ordens demais
+
+O escopo por usuário não foi aplicado.
+
+### Revise
+
+- req.user.id;
+- usuário mockado;
+- V_AcessosOrdem;
+- alias da query principal;
+- merge do WHERE.
+
+### Action não aparece no Fiori
+
+### Confira
+
+- action declarada no service;
+- app regenerado ou metadata atualizado;
+- cds watch reiniciado;
+- entidade correta no manifest.
+
+### Action falha com ordem em draft
+
+Execute a action na entidade ativa.
+No Object Page, salve ou descarte o draft antes.
+
+### Breakpoint não para
+
+### Confira
+
+- cds watch entrou em modo debug;
+- VS Code anexou na porta 9229;
+- o arquivo salvo é o mesmo carregado pelo CAP;
+- a action foi realmente chamada.
+
+## 23. Referências oficiais consultadas
+
+- [CAP Querying in JavaScript](https://cap.cloud.sap/docs/node.js/cds-ql)
+- [CAP Core Services](https://cap.cloud.sap/docs/node.js/core-services)
+- [CAP CDS CLI, debug com cds watch](https://cap.cloud.sap/docs/tools/cds-cli)
+- [CAP Testing with cds.test](https://cap.cloud.sap/docs/node.js/cds-test)
+- [CAP Serving SAP Fiori UIs](https://cap.cloud.sap/docs/guides/uis/fiori)
+
+> Querying in JavaScript | capire
+> Documentation for SAP Cloud Application Programming Model

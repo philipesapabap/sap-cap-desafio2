@@ -1,0 +1,1561 @@
+# Desafio 3: Ciclo completo de materiais, execução e rastreabilidade
+
+## Objetivo
+
+Estender o projeto do desafio 2 com quatro novos domínios funcionais:
+
+- Cadastro de materiais com internacionalização e ingestão em lote tolerante a falhas funcionais.
+- Ordens de recebimento e estorno como mecanismo de entrada de estoque.
+- Execução de manutenção com ciclo de vida próprio.
+- Rastreabilidade de movimentos de estoque vinculada à ordem.
+
+Ao final, você deve conseguir:
+
+- modelar entidades com `localized` e entender como o CAP gerencia `_texts`;
+- expor uma action OData V4 para ingestão em lote com processamento parcial e traduções;
+- ramificar lógica de liberação com base no tipo da ordem;
+- liberar quantidades parciais de materiais com histórico auditável;
+- modelar uma entidade com ciclo de vida independente e associação restrita por localização;
+- exibir movimentos de estoque no detalhe da ordem com Fiori Elements;
+- agrupar ordens principais e ordens relacionadas na listagem.
+
+## Cenário
+
+O sistema de manutenção evoluiu. Além de planejar e liberar ordens, o time precisa:
+
+1. Manter o cadastro de materiais em múltiplos idiomas, inclusive via carga em lote pela API.
+2. Repor o estoque por meio de ordens de recebimento ou de estorno, submetidas ao mesmo fluxo de liberação já existente.
+3. Registrar a execução física da manutenção, com datas reais e status próprio, vinculada a uma ordem liberada.
+4. Ver na tela da ordem todos os movimentos de estoque que ela gerou.
+5. Iniciar uma manutenção com atendimento parcial e pausá-la quando depender de materiais ainda pendentes.
+
+## Premissas
+
+- O projeto do desafio 2 está concluído e funcionando.
+- Continue usando SQLite para desenvolvimento.
+- Não é necessário SAP BTP nem HANA.
+- O SQLite atende aos testes funcionais, mas não oferece bloqueio pessimista de linhas. Valide os cenários concorrentes em um banco suportado por `SELECT ... FOR UPDATE`, quando disponível, ou implemente atualizações condicionais que preservem os mesmos invariantes no SQLite.
+- Use Node.js e CAP Node.js.
+- Partes 1 e 4 usam páginas padrão do SAP Fiori Elements para OData V4.
+- Partes 2 e 3 usam SAP Fiori Elements para OData V4 com Flexible Programming Model (FPM).
+- Fluxos personalizados devem usar Custom Pages com target `sap.fe.core.fpm`.
+- Use building blocks de `sap.fe.macros` quando houver um bloco adequado.
+- Controles SAPUI5, como `sap.m.Wizard`, podem ser usados dentro das Custom Pages quando não houver building block equivalente.
+- Controllers de Custom Pages devem estender `sap.fe.core.PageController` e usar a extensão pública `routing` do FPM.
+- Não acesse IDs, bindings, controles ou APIs internas do Fiori Elements.
+
+---
+
+## Parte 1 — Cadastro de materiais com internacionalização
+
+### 1.1 Alterar a entidade Materiais
+
+O campo `descricao` deve ser internacionalizado. O CAP gerencia automaticamente a tabela `_texts` quando o modificador `localized` é usado.
+
+Altere `db/schema.cds`:
+
+```cds
+@cds.odata.valuelist
+entity Materiais : cuid {
+    codigo     : String(30) not null;
+    descricao  : localized String(120) not null;
+    unidade    : String(3) default 'UN';
+    precoMedio : Decimal(13, 2) default 0;
+    ativo      : Boolean default true;
+}
+```
+
+O CAP criará automaticamente a entidade `Materiais_texts` com as colunas `locale`, `ID` e `descricao`.
+
+### 1.2 Criar dados de seed com traduções
+
+Crie ou atualize `db/data/desafio.ordens-Materiais.csv`:
+
+```csv
+ID;codigo;descricao;unidade;precoMedio;ativo
+a1000001-0000-4000-a000-000000000001;MAT-001;"Válvula de esfera 1/2""";UN;45.00;true
+a1000002-0000-4000-a000-000000000002;MAT-002;Óleo lubrificante 5W30;L;28.50;true
+a1000003-0000-4000-a000-000000000003;MAT-003;Parafuso M8x40;UN;0.85;true
+a1000004-0000-4000-a000-000000000004;MAT-004;Filtro de ar industrial;UN;120.00;true
+```
+
+Crie `db/data/desafio.ordens-Materiais_texts.csv`:
+
+```csv
+ID;locale;descricao
+a1000001-0000-4000-a000-000000000001;en;"Ball valve 1/2"""
+a1000001-0000-4000-a000-000000000001;pt;"Válvula de esfera 1/2"""
+a1000002-0000-4000-a000-000000000002;en;Lubricating oil 5W30
+a1000002-0000-4000-a000-000000000002;pt;Óleo lubrificante 5W30
+a1000003-0000-4000-a000-000000000003;en;Screw M8x40
+a1000003-0000-4000-a000-000000000003;pt;Parafuso M8x40
+a1000004-0000-4000-a000-000000000004;en;Industrial air filter
+a1000004-0000-4000-a000-000000000004;pt;Filtro de ar industrial
+```
+
+Os idiomas obrigatórios são `pt` e `en`. Idiomas adicionais são opcionais.
+
+### 1.3 Expor Materiais como escrita no serviço
+
+Altere `srv/planejamento-service.cds`. Remova `@readonly` de `Materiais` e habilite draft:
+
+```cds
+@odata.draft.enabled
+entity Materiais as projection on db.Materiais;
+```
+
+### 1.4 Criar tela Fiori Elements de cadastro
+
+Gere o app:
+
+```
+Module name: materiais
+Application title: Cadastro de Materiais
+Application namespace: treinamento.cap
+Main entity: Materiais
+```
+
+Crie `app/materiais/annotations.cds` com:
+
+- `HeaderInfo`: título `codigo`, descrição `descricao`
+- `SelectionFields`: `codigo`, `ativo`
+- `LineItem`: `codigo`, `descricao`, `unidade`, `precoMedio`, `ativo`
+- `FieldGroup#DadosGerais`: todos os campos
+- `Facets`: uma seção com `DadosGerais`
+
+### 1.5 Verificar exibição conforme idioma do usuário
+
+O CAP resolve automaticamente `localized` com base no locale da requisição. Ele pode ser determinado pelo cabeçalho `Accept-Language`, pelo parâmetro `sap-language` ou pela configuração de idioma do FLP/UI5.
+
+Teste:
+
+- Com `Accept-Language: pt`, `descricao` deve retornar o texto em português.
+- Com `Accept-Language: en`, deve retornar o texto em inglês.
+- Com idioma sem tradução cadastrada, o CAP retorna o texto da língua padrão (coluna da tabela principal).
+
+### 1.6 API de ingestão em lote
+
+Crie os tipos de entrada e a action não vinculada em `srv/planejamento-service.cds`:
+
+```cds
+type TraducaoMaterialInput {
+    locale    : String(14);
+    descricao : String(120);
+}
+
+type MaterialLoteInput {
+    codigo     : String(30);
+    unidade    : String(3);
+    precoMedio : Decimal(13, 2);
+    ativo      : Boolean;
+    traducoes  : array of TraducaoMaterialInput;
+}
+
+action cadastrarMateriaisEmLote(materiais: array of MaterialLoteInput)
+    returns array of {
+    codigo  : String(30);
+    sucesso : Boolean;
+    erro    : String;
+};
+```
+
+#### Regras de validação por item
+
+- `codigo` é obrigatório.
+- `traducoes` deve conter exatamente uma descrição não vazia para `pt` e uma para `en`.
+- Locales adicionais são permitidos, sem duplicidade de locale no mesmo material.
+- A descrição base de `Materiais` deve receber o texto em português.
+- O código deve ser único no banco e também dentro do lote recebido.
+- Se qualquer campo obrigatório estiver ausente ou inválido, o item falha com mensagem descritiva.
+- A falha de um item não impede o processamento dos demais.
+- O retorno deve conter um resultado por item enviado.
+- Erros funcionais esperados devem ser sanitizados. Não retorne `error.message` de banco ao cliente.
+- Falhas técnicas inesperadas devem ser relançadas e provocar rollback da requisição.
+- A criação do registro base e das respectivas traduções deve ocorrer em uma única inserção profunda por item.
+
+#### Registro e responsabilidades do handler
+
+Registre a action no `init()` do serviço:
+
+```javascript
+this.on(
+    "cadastrarMateriaisEmLote",
+    this.onCadastrarMateriaisEmLote,
+);
+```
+
+O handler deve seguir este fluxo:
+
+```javascript
+async onCadastrarMateriaisEmLote(req) {
+    const { Materiais } = this.entities;
+    const itens = req.data.materiais || [];
+    const resultados = [];
+    const codigosDoLote = new Set();
+
+    for (const item of itens) {
+        const erros = [];
+        const traducoes = new Map();
+
+        if (!item.codigo?.trim()) {
+            erros.push('Campo "codigo" é obrigatório');
+        }
+
+        for (const traducao of item.traducoes || []) {
+            const locale = traducao.locale?.trim().toLowerCase();
+            const descricao = traducao.descricao?.trim();
+
+            if (!locale || !descricao) {
+                erros.push("Locale e descrição da tradução são obrigatórios");
+                continue;
+            }
+
+            if (traducoes.has(locale)) {
+                erros.push(`Locale duplicado: ${locale}`);
+                continue;
+            }
+
+            traducoes.set(locale, descricao);
+        }
+
+        for (const locale of ["pt", "en"]) {
+            if (!traducoes.has(locale)) {
+                erros.push(`Tradução obrigatória ausente: ${locale}`);
+            }
+        }
+
+        const codigo = item.codigo?.trim();
+
+        if (codigo && codigosDoLote.has(codigo)) {
+            erros.push("Código duplicado no lote");
+        }
+
+        if (erros.length) {
+            resultados.push({ codigo: item.codigo || '', sucesso: false, erro: erros.join('; ') });
+            continue;
+        }
+
+        codigosDoLote.add(codigo);
+
+        try {
+            await INSERT.into(Materiais).entries({
+                codigo,
+                descricao:  traducoes.get("pt"),
+                unidade:    item.unidade?.trim() || 'UN',
+                precoMedio: item.precoMedio ?? 0,
+                ativo:      item.ativo ?? true,
+                texts:      [...traducoes].map(([locale, descricao]) => ({
+                    locale,
+                    descricao,
+                })),
+            });
+            resultados.push({ codigo, sucesso: true, erro: '' });
+        } catch (error) {
+            if (!ehConflitoDeCodigo(error)) {
+                throw error;
+            }
+
+            resultados.push({
+                codigo,
+                sucesso: false,
+                erro: "Já existe um material com esse código",
+            });
+        }
+    }
+
+    return resultados;
+}
+```
+
+`ehConflitoDeCodigo` representa um mapeamento isolado do erro de unicidade da versão e do banco usados pelo projeto. Ele não deve classificar indisponibilidade, timeout ou falha de programação como erro funcional.
+
+Adicione uma restrição única ao código do material:
+
+```cds
+annotate Materiais with @assert.unique: {
+    codigo: [codigo]
+};
+```
+
+#### Critério de aceite
+
+- Lote com todos os itens válidos retorna `sucesso: true` para cada um.
+- Lote com um item sem `codigo` retorna `sucesso: false` apenas para esse item; os demais são inseridos.
+- Item sem tradução `pt` ou `en` falha sem impedir os demais.
+- Código repetido no lote ou no banco falha com mensagem funcional, sem detalhes internos.
+- Lote vazio retorna array vazio sem erro.
+- Os materiais inseridos aparecem na tela Fiori e respeitam o locale da requisição.
+- O endpoint responde via `.http` com os resultados por item.
+
+#### Exemplo de chamada HTTP
+
+```http
+POST http://localhost:4004/odata/v4/planejamento/cadastrarMateriaisEmLote
+Content-Type: application/json
+Authorization: Basic admin admin
+
+{
+  "materiais": [
+    {
+      "codigo": "MAT-010",
+      "unidade": "UN",
+      "precoMedio": 35.00,
+      "traducoes": [
+        { "locale": "pt", "descricao": "Rolamento 6205" },
+        { "locale": "en", "descricao": "6205 bearing" }
+      ]
+    },
+    {
+      "codigo": "",
+      "traducoes": [
+        { "locale": "pt", "descricao": "Item sem código" },
+        { "locale": "en", "descricao": "Item without code" }
+      ]
+    }
+  ]
+}
+```
+
+Resposta esperada:
+
+```json
+[
+  { "codigo": "MAT-010", "sucesso": true,  "erro": "" },
+  { "codigo": "",        "sucesso": false, "erro": "Campo \"codigo\" é obrigatório" }
+]
+```
+
+### 1.7 Exemplos dos fluxos de materiais
+
+#### Exemplo A — Cadastro manual e tradução
+
+O planejador cria o material `MAT-020` pela aplicação Fiori:
+
+| Campo | Valor |
+|---|---|
+| Código | `MAT-020` |
+| Descrição base | `Correia dentada` |
+| Unidade | `UN` |
+| Preço médio | `89.90` |
+| Ativo | `true` |
+
+Na entidade de textos, também registra `pt = Correia dentada` e `en = Timing belt`.
+
+Para este exemplo, as traduções são complementadas pela API de lote ou pelos dados de seed antes da verificação de idioma; a tela padrão continua responsável pelo cadastro e pela edição dos campos expostos de `Materiais`.
+
+Resultados esperados:
+
+- ao abrir a aplicação em português, o usuário visualiza **Correia dentada**;
+- ao abrir em inglês, visualiza **Timing belt**;
+- ao solicitar `es`, ainda sem tradução, visualiza a descrição base **Correia dentada**.
+
+Esse exemplo cobre cadastro via draft, ativação e leitura localizada do mesmo material.
+
+#### Exemplo B — Lote com sucesso parcial funcional
+
+Uma requisição contém três materiais:
+
+| Código | Situação enviada | Resultado |
+|---|---|---|
+| `MAT-021` | Possui traduções `pt` e `en` | Inserido |
+| `MAT-022` | Não possui tradução `en` | Rejeitado apenas nesse item |
+| `MAT-023` | Possui traduções `pt`, `en` e `es` | Inserido com três textos |
+
+A action retorna três posições, preservando a correspondência com a entrada. `MAT-021` e `MAT-023` recebem `sucesso = true`. `MAT-022` recebe `sucesso = false` e a mensagem `Tradução obrigatória ausente: en`.
+
+Ao final, somente `MAT-021` e `MAT-023` existem no banco. Essa é uma falha funcional por item, portanto não desfaz os itens válidos.
+
+#### Exemplo C — Falha técnica durante o lote
+
+Considere que `MAT-024` foi validado e inserido, mas a conexão com o banco falhou inesperadamente durante a inserção de `MAT-025`. Como não se trata de erro funcional mapeado, o handler relança a exceção.
+
+Resultado esperado:
+
+- a requisição termina com erro técnico;
+- a transação inteira é revertida;
+- `MAT-024` não permanece gravado;
+- nenhum retorno parcial é apresentado como sucesso definitivo.
+
+Esse comportamento diferencia tolerância a erros de negócio de tolerância indevida a falhas técnicas.
+
+---
+
+## Parte 2 — Ordens de recebimento e estorno
+
+### 2.1 Adicionar tipo e vínculo à entidade Ordens
+
+Adicione em `db/schema.cds`:
+
+```cds
+@cds.odata.valuelist
+entity TiposOrdem {
+    key code  : String(20);
+        texto : String(80) not null;
+}
+```
+
+Altere `entity Ordens`:
+
+```cds
+entity Ordens : cuid, managed {
+    // ... campos existentes ...
+    tipo               : Association to TiposOrdem not null default 'MANUTENCAO';
+    ordemOrigem        : Association to Ordens; // obrigatório apenas em ESTORNO
+    itensMovimentacao  : Composition of many ItensMovimentacaoEstoque
+                             on itensMovimentacao.ordem = $self;
+    // ...
+}
+
+entity ItensMovimentacaoEstoque : cuid, managed {
+    ordem                : Association to Ordens not null;
+    material             : Association to Materiais not null;
+    deposito             : Association to Depositos not null;
+    quantidade           : Decimal(13, 3) not null @assert.range: [0.001, 100000];
+    itemLiberacaoOrigem  : Association to ItensLiberacaoOrdem;
+}
+```
+
+`ReservasMateriais` continua exclusiva das ordens de `MANUTENCAO`. Ordens de `RECEBIMENTO` e `ESTORNO` usam `ItensMovimentacaoEstoque`, evitando que entradas sejam consideradas por cálculos de reserva ou risco de estoque.
+
+Exponha os novos contratos em `srv/planejamento-service.cds`:
+
+```cds
+entity ItensMovimentacaoEstoque as projection on db.ItensMovimentacaoEstoque;
+
+@readonly
+entity LiberacoesOrdem as projection on db.LiberacoesOrdem;
+
+@readonly
+entity ItensLiberacaoOrdem as projection on db.ItensLiberacaoOrdem;
+
+@readonly
+entity TiposOrdem as projection on db.TiposOrdem;
+```
+
+Crie `db/data/desafio.ordens-TiposOrdem.csv`:
+
+```csv
+code;texto
+MANUTENCAO;Manutenção
+RECEBIMENTO;Recebimento
+ESTORNO;Estorno
+```
+
+### 2.2 Ramificar a lógica de liberação
+
+A função `liberarOrdemPorID` deve manter a transação e os bloqueios do desafio 2. Com os novos tipos, ela precisa:
+
+- `MANUTENCAO` → mantém o comportamento atual: reduz `quantidadeDisponivel`, aumenta `quantidadeReservada` e registra movimento `RESERVA`.
+- `RECEBIMENTO` → aumenta `quantidadeDisponivel`, mantém `quantidadeReservada` e registra movimento `ENTRADA`.
+- `ESTORNO` → aumenta `quantidadeDisponivel`, reduz `quantidadeReservada`, reduz o acumulado liberado da reserva de origem e registra movimento `ESTORNO`.
+
+O total `quantidadeDisponivel + quantidadeReservada` só aumenta em `RECEBIMENTO`. Em `MANUTENCAO` e `ESTORNO`, a quantidade apenas muda entre disponível e reservada.
+
+Garanta um único registro de estoque por material e depósito:
+
+```cds
+annotate Estoques with @assert.unique: {
+    materialDeposito: [material, deposito]
+};
+```
+
+#### Modelo de liberação progressiva para MANUTENCAO
+
+A liberação parcial deve representar uma decisão de negócio explícita. Ela não significa aceitar commit parcial depois de um erro. Cada solicitação de liberação continua atômica, mas uma ordem pode receber várias solicitações ao longo do tempo.
+
+Altere `ReservasMateriais` para manter o saldo de atendimento de cada item:
+
+```cds
+extend ReservasMateriais with {
+    quantidadeLiberada    : Decimal(13, 3) default 0 @readonly;
+    quantidadeMinimaInicio: Decimal(13, 3);
+    quantidadePendente    : Decimal(13, 3) =
+        quantidadeNecessaria - quantidadeLiberada;
+}
+```
+
+Regras dos campos:
+
+- `quantidadeLiberada` é um acumulador persistido e alterado somente pelo backend.
+- `quantidadePendente` é calculada e nunca recebida do cliente.
+- `quantidadeMinimaInicio` define quanto daquele item deve estar liberado antes do início da manutenção.
+- Quando `quantidadeMinimaInicio` não for informada, preencha com `quantidadeNecessaria` no `NEW`/`CREATE`.
+- Na migração das reservas existentes, preencha valores nulos com `quantidadeNecessaria` antes de habilitar o fluxo de execução.
+- Valide `0 <= quantidadeMinimaInicio <= quantidadeNecessaria`.
+- Depois da primeira liberação, não permita excluir a reserva nem alterar material ou depósito.
+- Alterações de quantidade planejada após a primeira liberação ficam fora do escopo deste desafio.
+
+Preserve os status existentes e adicione `PARCIALMENTE_LIBERADA` em `db/data/desafio.ordens-StatusOrdem.csv`:
+
+```csv
+code;texto
+PARCIALMENTE_LIBERADA;Parcialmente liberada
+```
+
+Registre cada execução de liberação separadamente:
+
+```cds
+@assert.unique: {
+    ordemNumero: [ordem, numero]
+}
+entity LiberacoesOrdem : cuid, managed {
+    ordem         : Association to Ordens not null;
+    numero        : Integer not null;
+    concluiuOrdem : Boolean default false;
+    itens         : Composition of many ItensLiberacaoOrdem
+                        on itens.liberacao = $self;
+}
+
+@assert.unique: {
+    liberacaoReserva: [liberacao, reserva]
+}
+entity ItensLiberacaoOrdem : cuid {
+    liberacao : Association to LiberacoesOrdem not null;
+    reserva   : Association to ReservasMateriais not null;
+    quantidade: Decimal(13, 3) not null @assert.range: [0.001, 100000];
+}
+```
+
+Adicione em `Ordens`:
+
+```cds
+liberacoes : Composition of many LiberacoesOrdem
+                 on liberacoes.ordem = $self;
+```
+
+Vincule o movimento à linha que o originou:
+
+```cds
+extend MovimentosEstoque with {
+    itemLiberacao : Association to ItensLiberacaoOrdem;
+}
+```
+
+`LiberacoesOrdem` e `ItensLiberacaoOrdem` são o histórico da decisão. `MovimentosEstoque` permanece o histórico contábil do estoque. Não derive auditoria somente do valor acumulado em `ReservasMateriais`.
+
+Defina `concluiuOrdem = true` somente quando aquela chamada eliminar todo o saldo pendente. O campo registra o resultado no instante da liberação e não deve ser reescrito por um estorno posterior.
+
+#### Contrato das actions de liberação
+
+Dentro de `PlanejamentoService`, declare o tipo de entrada:
+
+```cds
+type ItemLiberacaoInput {
+    reserva   : UUID;
+    quantidade: Decimal(13, 3);
+}
+```
+
+Fora do bloco do serviço, estenda as actions da projeção já existente:
+
+```cds
+extend PlanejamentoService.Ordens with actions {
+    action liberarQuantidades(
+        itens: array of PlanejamentoService.ItemLiberacaoInput
+    )
+        returns PlanejamentoService.LiberacoesOrdem;
+};
+```
+
+- `liberarQuantidades` libera somente as quantidades solicitadas.
+- A action retorna o cabeçalho criado em `LiberacoesOrdem`, permitindo que a tela confirme o número da liberação.
+- `liberarOrdem` permanece como atalho para liberar todo o saldo pendente.
+- As duas actions usam o mesmo método interno de domínio.
+- A liberação parcial aplica-se somente a ordens `MANUTENCAO`.
+- Ordens `RECEBIMENTO` e `ESTORNO` continuam com processamento integral e atômico.
+- Actions de liberação são executadas somente sobre a entidade ativa, nunca sobre o draft.
+- Se já existir uma manutenção vinculada, novas liberações são aceitas em `PLANEJADA`, `INICIADA` ou `PARADA`, mas rejeitadas em `FINALIZADA` ou `CANCELADA`.
+
+#### Validação de uma solicitação parcial
+
+Na mesma transação:
+
+1. Bloqueie a ordem ativa.
+2. Aceite status `ABERTA` ou `PARCIALMENTE_LIBERADA`.
+3. Rejeite reserva duplicada no payload.
+4. Confirme que cada reserva pertence à ordem.
+5. Exija `quantidade > 0` e `quantidade <= quantidadePendente`.
+6. Agregue as quantidades solicitadas por material e depósito.
+7. Ordene as combinações agregadas antes dos bloqueios, reduzindo risco de deadlock.
+8. Bloqueie cada estoque e valide a disponibilidade contra o total agregado. Isso evita aprovar isoladamente duas reservas que disputam o mesmo saldo.
+9. Crie um cabeçalho em `LiberacoesOrdem` e suas linhas.
+10. Atualize disponível, reservado e `quantidadeLiberada`.
+11. Crie movimentos `RESERVA` vinculados às linhas da liberação.
+12. Recalcule o status da ordem.
+
+O status resultante deve ser:
+
+| Condição | Status da ordem |
+|---|---|
+| Nenhuma quantidade liberada | `ABERTA` |
+| Existe quantidade liberada e algum saldo pendente | `PARCIALMENTE_LIBERADA` |
+| Todos os itens estão totalmente liberados | `LIBERADA` |
+
+O número da liberação deve ser sequencial dentro da ordem. Gere-o enquanto a ordem estiver bloqueada.
+
+#### Regras adicionais para ESTORNO
+
+- `ordemOrigem` é obrigatório.
+- A ordem de origem deve ter `tipo = MANUTENCAO` e status `PARCIALMENTE_LIBERADA` ou `LIBERADA`.
+- Cada item de estorno deve referenciar `itemLiberacaoOrigem`.
+- Material e depósito são derivados da reserva ligada ao item de liberação. Não confie em valores divergentes enviados pelo cliente.
+- Estorno parcial é permitido; não é obrigatório repetir todas as combinações da origem.
+- Para cada item de liberação, some os estornos já concluídos e a quantidade solicitada.
+- A soma acumulada não pode superar a quantidade daquela linha de liberação.
+- A quantidade a estornar não pode superar `quantidadeReservada` do estoque atual.
+- Agregue também os itens de estorno por material e depósito antes de validar e atualizar o estoque.
+- A ordem de origem, os estornos anteriores e os registros de estoque envolvidos devem ser lidos e bloqueados na mesma transação.
+- Em caso de concorrência, apenas a primeira operação que ainda respeitar o saldo acumulado pode concluir.
+- Ao concluir o estorno, reduza `ReservasMateriais.quantidadeLiberada` e recalcule o status da ordem de origem.
+- Rejeite o estorno quando a manutenção vinculada estiver `INICIADA`, `PARADA` ou `FINALIZADA`. Sem um modelo de consumo, não é seguro devolver ao estoque material possivelmente aplicado ou separado para a execução.
+- Se a manutenção ainda estiver `PLANEJADA`, um estorno pode reduzir o acumulado, mas `iniciarManutencao` deve revalidar os mínimos.
+- `ordemOrigem` deve permanecer vazia para `MANUTENCAO` e `RECEBIMENTO`.
+
+#### Regras adicionais para RECEBIMENTO
+
+- Os itens são informados em `ItensMovimentacaoEstoque`.
+- Não há verificação de saldo mínimo.
+- Se ainda não existir estoque para a combinação de material e depósito, crie o registro com `quantidadeDisponivel` igual à quantidade recebida e `quantidadeReservada = 0`.
+- Se o estoque existir, bloqueie o registro e incremente `quantidadeDisponivel`.
+- Se duas criações concorrentes disputarem a mesma combinação, trate o conflito da restrição única e repita a atualização sobre o registro vencedor.
+- Não altere `quantidadeReservada`.
+
+#### Atomicidade da liberação
+
+- Cada chamada de `liberarQuantidades` ou `liberarOrdem` é uma unidade atômica independente.
+- Se qualquer item da chamada falhar, nenhum estoque, acumulador, histórico ou movimento daquela chamada deve permanecer alterado.
+- Uma chamada parcial concluída pode deixar a ordem em `PARCIALMENTE_LIBERADA`.
+- A ordem muda para `LIBERADA` somente quando não existir quantidade pendente.
+- Processamento parcial significa várias chamadas válidas ao longo do tempo; não significa commit dos itens anteriores depois de erro na mesma chamada.
+- Falhas funcionais retornam `409` com mensagem clara.
+- Falhas técnicas são relançadas e provocam rollback.
+- O processamento em lote do desafio 2 continua tentando a liberação integral de cada ordem. Ele não deve decidir quantidades parciais automaticamente.
+
+### 2.3 Custom Page FPM de entrada de material
+
+Crie `app/entradas/` como um app SAP Fiori Elements para OData V4 com Flexible Programming Model.
+
+A página inicial deve ser uma Custom Page configurada com `name: "sap.fe.core.fpm"`. O controller deve estender `sap.fe.core.PageController`. Use building blocks para tabelas e campos orientados por metadados; use `sap.m.Wizard` apenas para a composição do fluxo em etapas.
+
+Estrutura mínima do target:
+
+```json
+{
+  "type": "Component",
+  "id": "EntradasCustomPage",
+  "name": "sap.fe.core.fpm",
+  "options": {
+    "settings": {
+      "viewName": "treinamento.cap.entradas.ext.view.Entradas",
+      "contextPath": "/Ordens"
+    }
+  }
+}
+```
+
+A tela deve permitir:
+
+1. Selecionar o tipo da nova ordem: `RECEBIMENTO` ou `ESTORNO`.
+2. Informar os campos obrigatórios herdados de `Ordens`, incluindo código, descrição, centro, local de instalação, responsável e período planejado.
+3. Para `ESTORNO`, selecionar uma ordem de manutenção de origem filtrada por status `PARCIALMENTE_LIBERADA` ou `LIBERADA` e `tipo = MANUTENCAO`.
+4. Pré-preencher os itens a partir de `ItensLiberacaoOrdem` ainda não totalmente estornados, preservando `itemLiberacaoOrigem`.
+5. Para `RECEBIMENTO`, informar manualmente material, depósito e quantidade.
+6. Validar cada linha antes de salvar e apresentar os respectivos value states.
+7. Criar o draft da ordem, salvar os itens e ativar o draft.
+8. Executar `liberarOrdem` somente na entidade ativa.
+9. Exibir feedback geral da liberação. A operação é atômica e não retorna sucesso parcial por item.
+
+Se a criação for concluída, mas a liberação falhar por regra funcional, a ordem deve permanecer ativa com status `ABERTA`, permitindo correção e nova tentativa.
+
+#### O que treina
+
+- Custom Pages e routing do Flexible Programming Model.
+- Building blocks `sap.fe.macros` para conteúdo orientado por metadados.
+- `sap.m.Wizard` dentro de uma Custom Page, com passos condicionais.
+- Binding OData V4 e ciclo de vida de draft.
+- Pré-preenchimento de campos a partir de seleção.
+- Chamada de action OData V4 (`liberarOrdem`).
+- Uso de `PageController`, `const`/`let`, i18n completo e `setBusy` com `finally`.
+- Navegação por `this.routing`, sem acesso ao router ou a controles internos do Fiori Elements.
+
+#### Critério de aceite
+
+- Uma ordem de recebimento criada e liberada incrementa o estoque corretamente.
+- Um recebimento cria o estoque quando a combinação de material e depósito ainda não existe.
+- Uma ordem de estorno criada e liberada devolve disponível, reduz reservado e referencia a ordem de origem.
+- Tentar estornar quantidade maior que o saldo acumulado permitido retorna `409`.
+- Dois estornos concorrentes não podem superar a quantidade original.
+- Falha em qualquer item provoca rollback integral da liberação.
+- A tela exibe os movimentos da ordem de origem ao selecionar um estorno.
+- O draft é ativado antes da chamada de `liberarOrdem`.
+- O app usa target `sap.fe.core.fpm` e APIs públicas do FPM.
+
+### 2.4 Liberação parcial na Object Page de Ordens
+
+A liberação parcial pertence à ordem de manutenção. Implemente-a no app `app/ordens/`, não no app de entradas.
+
+Adicione uma Custom Action FPM na Object Page. A action deve abrir um diálogo próprio, sem colocar campos temporários na entidade persistida.
+
+O diálogo deve exibir:
+
+- material e depósito;
+- quantidade necessária;
+- quantidade já liberada;
+- quantidade pendente;
+- quantidade mínima para início;
+- quantidade disponível em estoque;
+- campo editável `quantidadeParaLiberar`.
+
+Exponha `quantidadeMinimaInicio` também na edição da reserva, antes da primeira liberação. Assim o planejador define quais materiais e quantidades viabilizam o início sem transformar o diálogo de liberação em edição do planejamento.
+
+Regras de UX:
+
+- Exiba apenas reservas com `quantidadePendente > 0`.
+- Inicie `quantidadeParaLiberar` vazia ou com zero. Não reserve automaticamente todo o saldo.
+- Valide números positivos e limite pelo pendente antes do envio.
+- Trate a validação do cliente apenas como feedback; o backend continua autoritativo.
+- Desabilite confirmação enquanto não houver nenhuma quantidade válida.
+- Mantenha busy state durante a action e sempre limpe em `finally`.
+- Exiba uma confirmação única com o número da liberação concluída.
+- Em erro, preserve os valores informados para permitir correção.
+
+No controller extension, use APIs públicas do Fiori Elements e o operation binding OData V4. Para a versão UI5 usada pelo projeto, prefira `invoke()`; `execute()` está depreciado desde UI5 1.123.
+
+```javascript
+const action = model.bindContext(
+    "PlanejamentoService.liberarQuantidades(...)",
+    ordemContext,
+);
+
+action.setParameter("itens", itens);
+await action.invoke();
+```
+
+Não acesse a tabela interna da Object Page. O diálogo deve trabalhar com contextos públicos e um JSONModel local para as quantidades temporárias.
+
+Declare Side Effects da action para atualizar:
+
+- status da ordem;
+- tabela de reservas;
+- histórico de liberações;
+- movimentos de estoque;
+- indicadores de risco e disponibilidade.
+
+Mantenha também a action **Liberar saldo completo**, usando `liberarOrdem`. Ela deve mostrar confirmação explícita e liberar todos os saldos pendentes em uma única transação.
+
+#### Critério de aceite da liberação parcial
+
+- Uma ordem com duas reservas aceita liberar somente parte de uma delas.
+- A primeira chamada concluída muda a ordem para `PARCIALMENTE_LIBERADA`.
+- Uma segunda chamada acumula quantidades sem duplicar movimentos anteriores.
+- A última chamada muda a ordem para `LIBERADA`.
+- Quantidade acima do pendente retorna `409`.
+- Saldo insuficiente em um item reverte toda a chamada atual.
+- Duas chamadas concorrentes para a mesma ordem não ultrapassam o pendente.
+- O histórico identifica cada chamada e seus respectivos movimentos.
+- A Custom Action funciona somente sobre a entidade ativa.
+
+### 2.5 Exemplos dos fluxos de movimentação e liberação
+
+#### Exemplo A — Recebimento em estoque existente
+
+Antes da operação, o estoque de `MAT-010` no depósito `D01` possui:
+
+| Disponível | Reservado |
+|---:|---:|
+| 3 | 2 |
+
+O usuário cria e ativa a ordem `REC-001`, do tipo `RECEBIMENTO`, com sete unidades. Em seguida, executa `liberarOrdem`.
+
+Resultado esperado:
+
+| Disponível | Reservado | Movimento |
+|---:|---:|---|
+| 10 | 2 | `ENTRADA` de 7 unidades |
+
+A quantidade reservada não muda. A ordem fica `LIBERADA`.
+
+#### Exemplo B — Recebimento cria novo estoque
+
+Não existe estoque para `MAT-011` no depósito `D02`. A ordem `REC-002` recebe cinco unidades dessa combinação.
+
+Ao liberar a ordem, o backend cria o estoque com `quantidadeDisponivel = 5` e `quantidadeReservada = 0`. Também cria um movimento `ENTRADA` de cinco unidades vinculado à `REC-002`.
+
+#### Exemplo C — Liberação integral de manutenção
+
+A ordem `MAN-001` exige cinco unidades de `MAT-020` em `D01`. O estoque possui dez disponíveis e nenhuma reservada. O usuário escolhe **Liberar saldo completo**.
+
+Resultado esperado:
+
+| Informação | Antes | Depois |
+|---|---:|---:|
+| Disponível | 10 | 5 |
+| Reservado | 0 | 5 |
+| Liberado na reserva | 0 | 5 |
+| Pendente na reserva | 5 | 0 |
+
+A chamada cria a liberação número 1, marca `concluiuOrdem = true`, registra um movimento `RESERVA` de cinco unidades e altera a ordem para `LIBERADA`.
+
+#### Exemplo D — Liberação parcial em duas etapas
+
+A ordem `MAN-002` possui duas reservas:
+
+| Reserva | Necessária | Mínimo para início | Disponível inicial |
+|---|---:|---:|---:|
+| `MAT-A / D01` | 10 | 4 | 10 |
+| `MAT-B / D01` | 6 | 2 | 2 |
+
+Na primeira chamada, o planejador informa quatro unidades de A e duas de B. O backend cria a liberação número 1 e deixa os saldos assim:
+
+| Reserva | Liberada | Pendente |
+|---|---:|---:|
+| `MAT-A / D01` | 4 | 6 |
+| `MAT-B / D01` | 2 | 4 |
+
+A ordem fica `PARCIALMENTE_LIBERADA`. Como os dois mínimos foram atingidos, a execução da manutenção pode começar.
+
+Depois de uma reposição de estoque, o planejador libera as seis unidades restantes de A e as quatro restantes de B. A liberação número 2 recebe `concluiuOrdem = true`, os pendentes chegam a zero e a ordem muda para `LIBERADA`.
+
+#### Exemplo E — Falha atômica em uma liberação parcial
+
+A ordem `MAN-003` solicita, na mesma chamada, três unidades de A e duas de B. Há estoque suficiente para A, mas somente uma unidade disponível de B.
+
+Resultado esperado:
+
+- a action retorna `409`;
+- nenhuma unidade de A é reservada;
+- nenhuma unidade de B é reservada;
+- `quantidadeLiberada` permanece inalterada nas duas reservas;
+- nenhum cabeçalho, item de liberação ou movimento é criado.
+
+O usuário pode corrigir as quantidades no diálogo e tentar novamente. A atomicidade vale para a chamada inteira, mesmo quando ela é parte de uma liberação progressiva.
+
+#### Exemplo F — Duas reservas disputam o mesmo estoque
+
+A ordem possui duas reservas distintas de `MAT-C / D03`. Cada uma solicita quatro unidades na mesma chamada, mas o estoque possui apenas seis disponíveis.
+
+O backend agrega a solicitação para oito unidades antes de validar o estoque. A chamada inteira retorna `409`; não deve aprovar cada linha isoladamente com base nas mesmas seis unidades.
+
+#### Exemplo G — Estorno parcial de uma liberação
+
+A liberação número 1 da ordem `MAN-004` reservou cinco unidades. Ainda não existe manutenção em execução para essa ordem. O usuário cria `EST-001`, aponta para o item dessa liberação e informa duas unidades.
+
+Ao liberar `EST-001`:
+
+- o disponível aumenta em duas unidades;
+- o reservado diminui em duas unidades;
+- o acumulado liberado da reserva cai de cinco para três;
+- um movimento `ESTORNO` referencia o item exato da liberação número 1;
+- o status da ordem de origem é recalculado conforme o saldo restante.
+
+Uma tentativa posterior de estornar mais de três unidades dessa mesma linha retorna `409`. Se a manutenção estiver `INICIADA`, `PARADA` ou `FINALIZADA`, o estorno também é rejeitado.
+
+---
+
+## Parte 3 — Execução de manutenção
+
+### 3.1 Adicionar status de manutenção ao schema
+
+```cds
+@cds.odata.valuelist
+entity StatusManutencao {
+    key code  : String(20);
+        texto : String(80) not null;
+}
+
+@cds.odata.valuelist
+entity TiposParadaManutencao {
+    key code  : String(30);
+        texto : String(80) not null;
+}
+```
+
+Crie `db/data/desafio.ordens-StatusManutencao.csv`:
+
+```csv
+code;texto
+PLANEJADA;Planejada
+INICIADA;Iniciada
+PARADA;Parada
+FINALIZADA;Finalizada
+CANCELADA;Cancelada
+```
+
+Crie `db/data/desafio.ordens-TiposParadaManutencao.csv`:
+
+```csv
+code;texto
+AGUARDANDO_MATERIAL;Aguardando material
+OPERACIONAL;Parada operacional
+SEGURANCA;Parada por segurança
+OUTRO;Outro motivo
+```
+
+### 3.2 Criar entidade Manutencao
+
+```cds
+@assert.unique: {
+    ordem: [ordem]
+}
+entity Manutencao : cuid, managed {
+    codigo             : String(30) not null;
+    descricao          : String(160);
+    ordem              : Association to Ordens not null;
+    localInstalacao    : Association to LocaisInstalacao not null;
+    status             : Association to StatusManutencao not null default 'PLANEJADA';
+    dataInicioPlanejada: DateTime not null;
+    dataFimPlanejada   : DateTime not null;
+    dataInicioReal     : DateTime;
+    dataFimReal        : DateTime;
+    motivoCancelamento : String(500);
+    tecnicoResponsavel : Association to Usuarios not null;
+    observacao         : String(500);
+    paradas            : Composition of many ParadasManutencao
+                             on paradas.manutencao = $self;
+}
+
+entity ParadasManutencao : cuid, managed {
+    manutencao               : Association to Manutencao not null;
+    tipo                     : Association to TiposParadaManutencao not null;
+    motivo                   : String(500) not null;
+    numeroLiberacaoReferencia: Integer default 0;
+    dataRetomada             : Timestamp;
+    retomadaPor              : Association to Usuarios;
+}
+```
+
+#### Regras de negócio
+
+- Só pode ser criada para uma ordem com `tipo = MANUTENCAO` e status `PARCIALMENTE_LIBERADA` ou `LIBERADA`.
+- Cada ordem de manutenção pode possuir no máximo uma execução em `Manutencao`.
+- `localInstalacao` deve ser o mesmo da ordem vinculada.
+- `dataInicioPlanejada` deve ser anterior ou igual a `dataFimPlanejada`.
+- Após a ativação, `ordem`, `localInstalacao` e `tecnicoResponsavel` não podem ser alterados.
+- O status não pode ser alterado por `CREATE`, `UPDATE` ou `PATCH`; somente as actions de transição podem modificá-lo.
+- No `before SAVE`, leia o estado completo do draft. Não dependa apenas de `req.data`, pois um `PATCH` pode conter somente os campos alterados.
+- Valide novamente as regras no backend durante a ativação do draft.
+- `iniciarManutencao` exige pelo menos uma quantidade liberada e, para cada reserva, `quantidadeLiberada >= quantidadeMinimaInicio`.
+- `finalizarManutencao` exige que a ordem esteja `LIBERADA`, sem material pendente.
+- Deve existir no máximo uma parada sem `dataRetomada` por manutenção.
+- Transições de status permitidas:
+
+```
+PLANEJADA  → INICIADA   (valida mínimos e preenche dataInicioReal)
+INICIADA   → PARADA     (cria um registro em ParadasManutencao)
+PARADA     → INICIADA   (fecha a parada aberta e retoma a execução)
+INICIADA   → FINALIZADA (servidor preenche dataFimReal com o instante atual)
+PLANEJADA  → CANCELADA  (preenche motivoCancelamento obrigatoriamente)
+INICIADA   → CANCELADA  (preenche motivoCancelamento obrigatoriamente)
+PARADA     → CANCELADA  (preenche motivoCancelamento obrigatoriamente)
+```
+
+As actions devem bloquear o registro ativo, validar o status atual e atualizar os campos na mesma transação. `retomarManutencao` preserva `dataInicioReal`. `finalizarManutencao` deve garantir que `dataFimReal >= dataInicioReal`.
+
+#### Parada por falta de material
+
+Quando `tipo = AGUARDANDO_MATERIAL`:
+
+- A ordem vinculada deve possuir pelo menos uma reserva com `quantidadePendente > 0`.
+- Ao parar, grave em `numeroLiberacaoReferencia` o maior número de liberação existente na ordem.
+- Uma nova liberação parcial não retoma a manutenção automaticamente.
+- `retomarManutencao` exige pelo menos uma liberação concluída com número maior que `numeroLiberacaoReferencia`.
+- O usuário continua responsável por confirmar que a nova quantidade atende a próxima etapa do trabalho.
+- A tela deve mostrar os itens ainda pendentes antes da retomada.
+
+Esse desenho separa disponibilidade de material e execução física. A chegada ou reserva do material não prova que o técnico retomou o trabalho.
+
+### 3.3 Expor Manutencao no serviço
+
+Em `srv/planejamento-service.cds`:
+
+```cds
+@readonly
+entity StatusManutencao as projection on db.StatusManutencao;
+
+@readonly
+entity TiposParadaManutencao as projection on db.TiposParadaManutencao;
+
+@readonly
+entity ParadasManutencao as projection on db.ParadasManutencao;
+
+@odata.draft.enabled
+entity Manutencao as projection on db.Manutencao actions {
+    action iniciarManutencao()                              returns Manutencao;
+    action pararManutencao(
+        tipo  : String(30),
+        motivo: String(500)
+    )                                                       returns Manutencao;
+    action retomarManutencao()                              returns Manutencao;
+    action finalizarManutencao()                            returns Manutencao;
+    action cancelarManutencao(motivo: String(500))          returns Manutencao;
+};
+```
+
+Fora do bloco `service PlanejamentoService`, marque o status como somente leitura:
+
+```cds
+annotate PlanejamentoService.Manutencao with {
+    status @readonly;
+};
+```
+
+Declare `Common.SideEffects` para atualizar status, datas reais, parada aberta e resumo dos materiais após cada action. Use `Core.OperationAvailable` para refletir no frontend as mesmas transições permitidas pelo backend.
+
+#### Identidade e autorização
+
+- Para este desafio, `req.user.id` deve corresponder a `Usuarios.matricula`.
+- Os usuários mockados precisam possuir uma matrícula existente no seed.
+- A restrição por técnico deve ser aplicada no serviço, não apenas como filtro da tela.
+- Usuários com papel `admin` podem consultar todas as manutenções.
+- Usuários comuns podem ler e executar actions apenas nas manutenções em que `tecnicoResponsavel.matricula = $user`.
+- Ao criar uma manutenção, valide a matrícula recebida contra o usuário atual ou restrinja a criação ao papel responsável pelo planejamento.
+
+Exemplo de restrição para leitura:
+
+```cds
+annotate PlanejamentoService.Manutencao with @restrict: [
+    {
+        grant: 'READ',
+        to   : 'admin'
+    },
+    {
+        grant: 'READ',
+        to   : 'authenticated-user',
+        where: (tecnicoResponsavel.matricula = $user)
+    }
+];
+```
+
+As actions precisam repetir a restrição por instância ou validá-la no handler. A visibilidade de um botão não constitui autorização.
+
+### 3.4 Aplicação FPM de execução
+
+Crie `app/execucao/` como um app SAP Fiori Elements para OData V4 com Flexible Programming Model.
+
+Prefira List Report e Object Page padrão. Use Custom Pages ou Custom Sections somente nos trechos que exigirem composição específica. Toda Custom Page deve usar `sap.fe.core.fpm`, `sap.fe.core.PageController` e building blocks de `sap.fe.macros`.
+
+A tela deve:
+
+1. Listar as manutenções autorizadas pelo backend para o usuário logado.
+2. Mostrar status com `Criticality` nas annotations ou, em conteúdo customizado, com `sap.m.ObjectStatus`.
+3. No detalhe, mostrar necessária, liberada, mínima para início e pendente para cada material da ordem.
+4. Expor as actions como botões contextuais, habilitados por `Core.OperationAvailable` e validados novamente pelo backend.
+5. Ao parar, solicitar tipo e motivo. Destaque `AGUARDANDO_MATERIAL` semanticamente.
+6. Quando estiver aguardando material, exibir a parada aberta e as reservas pendentes.
+7. Exibir **Liberar materiais pendentes**, navegando para a Object Page da ordem.
+8. Exibir **Nova ordem de estorno**, navegando para o app de entradas com `tipo = ESTORNO`, `ordemOrigem` e os itens elegíveis.
+9. Exibir **Nova ordem de recebimento**, navegando para o app de entradas com `tipo = RECEBIMENTO`, centro e local de instalação.
+
+Como `execucao` e `entradas` são apps diferentes, use navegação baseada em intent do FLP. Não use o router interno de um app para acessar diretamente views do outro. Os parâmetros recebidos devem ser tratados apenas como sugestões de preenchimento e revalidados no backend.
+
+#### O que treina
+
+- List Report, Object Page e extensões pelo FPM.
+- Building blocks e annotations de `Criticality`.
+- `Core.OperationAvailable` para disponibilidade de actions.
+- Navegação interna por `this.routing` e navegação entre apps por intent.
+- Chamada de actions OData V4 com parâmetros.
+- Abertura de formulário FPM com dados pré-preenchidos e revalidados.
+- Coordenação entre liberação progressiva, recebimento e execução.
+
+#### Fluxo para manutenção aguardando material
+
+1. O técnico executa `pararManutencao` com `AGUARDANDO_MATERIAL`.
+2. Se não houver estoque, cria-se e libera-se uma ordem de `RECEBIMENTO`.
+3. O estoque disponível aumenta, mas ainda não pertence à ordem de manutenção.
+4. Na Object Page da ordem original, o usuário executa `liberarQuantidades`.
+5. A nova liberação aumenta reservado e reduz o pendente da ordem.
+6. A manutenção permanece `PARADA` até `retomarManutencao`.
+
+Não conecte o recebimento diretamente à manutenção. O recebimento altera estoque disponível; a liberação parcial atribui esse estoque à ordem; a retomada registra a decisão operacional do técnico.
+
+Exemplo: uma ordem exige dez unidades de A e seis de B, com mínimos de início iguais a quatro de A e duas de B. A primeira liberação de quatro e duas permite iniciar e deixa a ordem `PARCIALMENTE_LIBERADA`. Se a próxima etapa exigir o saldo restante, o técnico registra uma parada `AGUARDANDO_MATERIAL`. Após o recebimento, o planejador libera seis de A e quatro de B na ordem original. A ordem passa a `LIBERADA`, mas a manutenção só volta a `INICIADA` quando o técnico executar `retomarManutencao`.
+
+#### Critério de aceite
+
+- Manutenção em `PLANEJADA` exibe apenas botões de iniciar e cancelar.
+- Manutenção em `INICIADA` exibe botões de parar, finalizar e cancelar.
+- `iniciarManutencao` aceita ordem parcial somente quando todos os mínimos de início forem atendidos.
+- `iniciarManutencao` preenche `dataInicioReal` no servidor.
+- Parada por material registra o número da última liberação conhecida.
+- Uma nova liberação não retoma a manutenção automaticamente.
+- Retomada sem nova liberação após a parada por material retorna `409`.
+- `finalizarManutencao` preenche `dataFimReal` no servidor.
+- Finalização com material pendente retorna `409`.
+- `PATCH` direto de `status` é rejeitado.
+- Usuário comum não consulta nem executa actions de outro técnico.
+- A ativação rejeita ordem que não seja de manutenção parcial ou totalmente liberada.
+- O botão de estorno abre o app de entradas com os itens elegíveis pré-preenchidos.
+- O app usa apenas APIs públicas do FPM.
+
+### 3.5 Exemplos dos fluxos de execução
+
+#### Exemplo A — Execução com materiais totalmente liberados
+
+A ordem `MAN-010` está `LIBERADA` e não possui material pendente. O planejador cria uma manutenção em `PLANEJADA` para o mesmo local de instalação e atribui o técnico `100001`.
+
+Fluxo esperado:
+
+1. O técnico executa `iniciarManutencao`.
+2. O status muda para `INICIADA` e `dataInicioReal` é preenchida pelo servidor.
+3. Após concluir o serviço, o técnico executa `finalizarManutencao`.
+4. O status muda para `FINALIZADA` e `dataFimReal` é preenchida pelo servidor.
+
+Como não existe material pendente, a finalização é aceita.
+
+#### Exemplo B — Início bloqueado por mínimo não atendido
+
+A ordem `MAN-011` precisa de dez unidades de A e possui `quantidadeMinimaInicio = 4`. Apenas três unidades foram liberadas.
+
+A manutenção pode ser planejada, pois a ordem está `PARCIALMENTE_LIBERADA`. Entretanto, `iniciarManutencao` retorna `409`, mantém o status `PLANEJADA` e não preenche `dataInicioReal`.
+
+Depois que uma nova liberação elevar o acumulado de A para pelo menos quatro, o técnico poderá tentar iniciar novamente.
+
+#### Exemplo C — Início parcial, parada e retomada
+
+A ordem `MAN-012` exige dez unidades de A e seis de B. Os mínimos de início são quatro de A e duas de B.
+
+| Momento | A liberado | B liberado | Ordem | Manutenção |
+|---|---:|---:|---|---|
+| Planejamento | 0 | 0 | `ABERTA` | Ainda inexistente |
+| Liberação 1 | 4 | 2 | `PARCIALMENTE_LIBERADA` | `PLANEJADA` |
+| Início | 4 | 2 | `PARCIALMENTE_LIBERADA` | `INICIADA` |
+| Falta de material | 4 | 2 | `PARCIALMENTE_LIBERADA` | `PARADA` |
+| Liberação 2 | 10 | 6 | `LIBERADA` | Continua `PARADA` |
+| Retomada | 10 | 6 | `LIBERADA` | `INICIADA` |
+| Finalização | 10 | 6 | `LIBERADA` | `FINALIZADA` |
+
+Ao parar, o técnico seleciona `AGUARDANDO_MATERIAL`. O sistema grava o número 1 em `numeroLiberacaoReferencia`. Um recebimento repõe o estoque e a liberação número 2 atende o restante da ordem. A manutenção não retoma automaticamente; o técnico precisa executar `retomarManutencao`.
+
+#### Exemplo D — Parada operacional sem nova liberação
+
+Uma manutenção `INICIADA` sofre uma interrupção por indisponibilidade do equipamento auxiliar. O técnico executa `pararManutencao` com tipo `OPERACIONAL` e informa o motivo.
+
+Como a parada não é `AGUARDANDO_MATERIAL`, `retomarManutencao` não exige um número de liberação posterior. A action fecha a parada aberta, preenche `dataRetomada` e devolve a manutenção ao status `INICIADA`.
+
+#### Exemplo E — Restrição por técnico responsável
+
+A manutenção `MNT-100` está atribuída ao usuário `100001`.
+
+- autenticado como `100001`, o usuário pode consultar a manutenção e executar as actions permitidas pelo status;
+- autenticado como `100002`, o usuário não deve obter a instância pela leitura comum nem executar actions nela;
+- autenticado como `admin`, o usuário pode consultar a manutenção conforme a política administrativa definida.
+
+A ocultação do registro ou do botão na interface não substitui a validação da instância no backend.
+
+---
+
+## Parte 4 — Movimentos de estoque na tela da ordem
+
+### 4.1 Expor MovimentosEstoque no serviço
+
+Em `srv/planejamento-service.cds`:
+
+```cds
+@readonly
+entity MovimentosEstoque as projection on db.MovimentosEstoque;
+```
+
+### 4.2 Adicionar associação em Ordens
+
+Adicione em `db/schema.cds` dentro de `entity Ordens`:
+
+```cds
+movimentos : Association to many MovimentosEstoque on movimentos.ordem = $self;
+```
+
+### 4.3 Adicionar seção na tela de ordens
+
+Em `app/ordens/annotations.cds`, adicione um novo facet na Object Page:
+
+```cds
+{
+    $Type : 'UI.ReferenceFacet',
+    Label : 'Movimentos de estoque',
+    Target: 'movimentos/@UI.LineItem'
+},
+```
+
+Anote `MovimentosEstoque` com:
+
+```cds
+annotate service.MovimentosEstoque with @(
+    UI.LineItem: [
+        { Value: createdAt,  Label: 'Data' },
+        { Value: tipo,       Label: 'Tipo' },
+        { Value: material.descricao, Label: 'Material' },
+        { Value: deposito.nome,      Label: 'Depósito' },
+        { Value: quantidade, Label: 'Quantidade' },
+        { Value: itemLiberacao.liberacao.numero, Label: 'Liberação' },
+        { Value: origem,     Label: 'Origem' }
+    ]
+);
+```
+
+### 4.4 Ordens relacionadas na Object Page
+
+Adicione a associação de ordens filhas em `db/schema.cds`:
+
+```cds
+entity Ordens : cuid, managed {
+    // ... campos existentes ...
+    ordensRelacionadas : Association to many Ordens on ordensRelacionadas.ordemOrigem = $self;
+}
+```
+
+Adicione o facet na Object Page:
+
+```cds
+{
+    $Type : 'UI.ReferenceFacet',
+    Label : 'Ordens relacionadas',
+    Target: 'ordensRelacionadas/@UI.LineItem#Relacionadas'
+},
+```
+
+Como `ordensRelacionadas` aponta novamente para `Ordens`, use uma `LineItem` qualificada. Não crie uma projeção inexistente apenas para a annotation:
+
+```cds
+annotate service.Ordens with @(
+    UI.LineItem #Relacionadas: [
+        { Value: codigo,       Label: 'Ordem' },
+        { Value: tipo.texto,   Label: 'Tipo' },
+        { Value: status.texto, Label: 'Status' },
+        { Value: descricao,    Label: 'Descrição' }
+    ]
+);
+```
+
+### 4.5 Agrupamento na listagem principal
+
+Agrupar diretamente por `ordemOrigem_ID` não reúne a ordem principal e os estornos, pois a ordem principal possui origem nula. Adicione propriedades calculadas em `Ordens`:
+
+```cds
+entity Ordens : cuid, managed {
+    // ... campos existentes ...
+    grupoOrdem_ID     : UUID = coalesce(ordemOrigem.ID, ID);
+    grupoOrdemCodigo  : String(30) = coalesce(ordemOrigem.codigo, codigo);
+    ordemNoGrupo      : Integer = case
+                                      when ordemOrigem is null then 0
+                                      else 1
+                                  end;
+}
+```
+
+Exponha as três propriedades na projeção. Adicione `grupoOrdem_ID` à `LineItem` e associe o texto amigável:
+
+```cds
+annotate service.Ordens with {
+    grupoOrdem_ID @Common.Text: grupoOrdemCodigo
+                  @Common.TextArrangement: #TextOnly;
+};
+```
+
+Configure o agrupamento padrão via `PresentationVariant`:
+
+```cds
+annotate service.Ordens with @(
+    UI.PresentationVariant: {
+        GroupBy    : [grupoOrdem_ID],
+        SortOrder  : [
+            { Property: grupoOrdem_ID },
+            { Property: ordemNoGrupo },
+            { Property: codigo }
+        ],
+        Visualizations: ['@UI.LineItem']
+    }
+);
+```
+
+O app atual de ordens usa `GridTable`, que não suporta agrupamento no Fiori Elements. Altere `tableSettings.type` para `ResponsiveTable` e mantenha a personalização de agrupamento habilitada. A tabela responsiva suporta um nível de agrupamento, suficiente para este cenário.
+
+#### Critério de aceite
+
+- Na Object Page de uma ordem de manutenção, a seção de movimentos exibe as reservas geradas pela liberação.
+- Na Object Page de uma ordem de estorno, a seção de movimentos exibe o movimento de estorno.
+- A seção de ordens relacionadas exibe os estornos vinculados à ordem de manutenção.
+- Na listagem, as ordens de estorno aparecem agrupadas abaixo da ordem de manutenção de origem.
+- O cabeçalho do grupo exibe o código da ordem principal, não o UUID técnico.
+- A listagem usa `ResponsiveTable` com agrupamento habilitado.
+
+### 4.6 Exemplos de rastreabilidade na interface
+
+#### Exemplo A — Movimentos de duas liberações parciais
+
+A ordem `MAN-020` foi atendida em duas chamadas. A seção **Movimentos de estoque** da Object Page deve apresentar, em ordem cronológica:
+
+| Data | Tipo | Material | Depósito | Quantidade | Liberação | Origem |
+|---|---|---|---|---:|---:|---|
+| 10:00 | `RESERVA` | Material A | D01 | 4 | 1 | `liberarQuantidades` |
+| 10:00 | `RESERVA` | Material B | D01 | 2 | 1 | `liberarQuantidades` |
+| 15:30 | `RESERVA` | Material A | D01 | 6 | 2 | `liberarQuantidades` |
+| 15:30 | `RESERVA` | Material B | D01 | 4 | 2 | `liberarQuantidades` |
+
+O usuário consegue distinguir quais movimentos pertencem a cada decisão de liberação sem depender somente do total acumulado da reserva.
+
+#### Exemplo B — Ordem de recebimento
+
+A ordem `REC-020` recebeu oito unidades do Material C. Na Object Page dessa ordem, a seção de movimentos mostra uma linha `ENTRADA`, quantidade oito, depósito correspondente e origem técnica `liberarOrdem`. O campo **Liberação** pode ficar vazio, pois a entrada não deriva de `ItensLiberacaoOrdem` de manutenção.
+
+#### Exemplo C — Estorno e ordem relacionada
+
+A ordem `EST-020` estorna duas unidades originalmente liberadas para `MAN-020`.
+
+Na Object Page de `EST-020`, a seção de movimentos mostra o movimento `ESTORNO`. Na Object Page de `MAN-020`, a seção **Ordens relacionadas** mostra `EST-020`, seu tipo e seu status.
+
+Na List Report, o agrupamento esperado é:
+
+```text
+MAN-020
+  MAN-020  | Manutenção | Parcialmente liberada
+  EST-020  | Estorno    | Liberada
+```
+
+O cabeçalho usa `MAN-020`, obtido de `grupoOrdemCodigo`. A ordem principal aparece primeiro por `ordemNoGrupo = 0`; o estorno aparece depois por `ordemNoGrupo = 1`.
+
+---
+
+## Alterações no schema — resumo consolidado
+
+```cds
+// Novos tipos de ordem
+entity TiposOrdem { key code: String(20); texto: String(80) not null; }
+
+// Status da execução de manutenção
+entity StatusManutencao { key code: String(20); texto: String(80) not null; }
+
+// Motivos estruturados de parada
+entity TiposParadaManutencao { key code: String(30); texto: String(80) not null; }
+
+// Alterações em Materiais
+@assert.unique: { codigo: [codigo] }
+entity Materiais : cuid {
+    codigo     : String(30) not null;
+    descricao  : localized String(120) not null;
+    unidade    : String(3) default 'UN';
+    precoMedio : Decimal(13, 2) default 0;
+    ativo      : Boolean default true;
+}
+
+annotate Estoques with @assert.unique: {
+    materialDeposito: [material, deposito]
+};
+
+// Alterações em Ordens
+entity Ordens : cuid, managed {
+    codigo              : String(30) not null;
+    descricao           : String(160) not null;
+    centro              : Association to Centros not null;
+    localInstalacao     : Association to LocaisInstalacao not null;
+    responsavel         : Association to Usuarios not null;
+    status              : Association to StatusOrdem default 'ABERTA';
+    prioridade          : Association to Prioridades default 'MEDIA';
+    dataInicioPlanejada : DateTime not null;
+    dataFimPlanejada    : DateTime not null;
+    valorEstimado       : Decimal(13, 2) default 0;
+    observacao          : String(500);
+    reservas            : Composition of many ReservasMateriais
+                              on reservas.ordem = $self;
+    responsabilidades   : Composition of many ResponsabilidadesOrdem
+                              on responsabilidades.ordem = $self;
+    tipo              : Association to TiposOrdem not null default 'MANUTENCAO';
+    ordemOrigem       : Association to Ordens;
+    itensMovimentacao : Composition of many ItensMovimentacaoEstoque
+                            on itensMovimentacao.ordem = $self;
+    liberacoes        : Composition of many LiberacoesOrdem
+                            on liberacoes.ordem = $self;
+    movimentos        : Association to many MovimentosEstoque
+                            on movimentos.ordem = $self;
+    ordensRelacionadas: Association to many Ordens on ordensRelacionadas.ordemOrigem = $self;
+    grupoOrdem_ID     : UUID = coalesce(ordemOrigem.ID, ID);
+    grupoOrdemCodigo  : String(30) = coalesce(ordemOrigem.codigo, codigo);
+    ordemNoGrupo      : Integer = case
+                                     when ordemOrigem is null then 0
+                                     else 1
+                                 end;
+}
+
+// Alterações nas reservas de manutenção
+entity ReservasMateriais : cuid, managed {
+    ordem                  : Association to Ordens not null;
+    material               : Association to Materiais not null;
+    deposito               : Association to Depositos not null;
+    quantidadeNecessaria   : Decimal(13, 3) not null;
+    quantidadeLiberada     : Decimal(13, 3) default 0 @readonly;
+    quantidadeMinimaInicio : Decimal(13, 3);
+    quantidadePendente     : Decimal(13, 3) =
+        quantidadeNecessaria - quantidadeLiberada;
+}
+
+// Histórico de cada solicitação atômica de liberação
+@assert.unique: { ordemNumero: [ordem, numero] }
+entity LiberacoesOrdem : cuid, managed {
+    ordem         : Association to Ordens not null;
+    numero        : Integer not null;
+    concluiuOrdem : Boolean default false;
+    itens         : Composition of many ItensLiberacaoOrdem
+                        on itens.liberacao = $self;
+}
+
+@assert.unique: { liberacaoReserva: [liberacao, reserva] }
+entity ItensLiberacaoOrdem : cuid {
+    liberacao : Association to LiberacoesOrdem not null;
+    reserva   : Association to ReservasMateriais not null;
+    quantidade: Decimal(13, 3) not null @assert.range: [0.001, 100000];
+}
+
+extend MovimentosEstoque with {
+    itemLiberacao : Association to ItensLiberacaoOrdem;
+}
+
+// Itens exclusivos de RECEBIMENTO e ESTORNO
+entity ItensMovimentacaoEstoque : cuid, managed {
+    ordem               : Association to Ordens not null;
+    material            : Association to Materiais not null;
+    deposito            : Association to Depositos not null;
+    quantidade          : Decimal(13, 3) not null @assert.range: [0.001, 100000];
+    itemLiberacaoOrigem : Association to ItensLiberacaoOrdem;
+}
+
+// Nova entidade
+@assert.unique: { ordem: [ordem] }
+entity Manutencao : cuid, managed {
+    codigo             : String(30) not null;
+    descricao          : String(160);
+    ordem              : Association to Ordens not null;
+    localInstalacao    : Association to LocaisInstalacao not null;
+    status             : Association to StatusManutencao not null default 'PLANEJADA';
+    dataInicioPlanejada: DateTime not null;
+    dataFimPlanejada   : DateTime not null;
+    dataInicioReal     : DateTime;
+    dataFimReal        : DateTime;
+    motivoCancelamento : String(500);
+    tecnicoResponsavel : Association to Usuarios not null;
+    observacao         : String(500);
+    paradas            : Composition of many ParadasManutencao
+                             on paradas.manutencao = $self;
+}
+
+entity ParadasManutencao : cuid, managed {
+    manutencao               : Association to Manutencao not null;
+    tipo                     : Association to TiposParadaManutencao not null;
+    motivo                   : String(500) not null;
+    numeroLiberacaoReferencia: Integer default 0;
+    dataRetomada             : Timestamp;
+    retomadaPor              : Association to Usuarios;
+}
+```
+
+---
+
+## Conceitos praticados
+
+| Conceito | Onde aparece |
+|---|---|
+| `localized` e `_texts` | Parte 1 — Materiais |
+| Action não vinculada com traduções e retorno estruturado | Parte 1 — cadastro em lote |
+| Processamento parcial tolerante a falhas | Parte 1 — lote |
+| Ramificação de lógica por tipo de entidade | Parte 2 — liberar por tipo |
+| Liberação progressiva com transações atômicas | Parte 2 — manutenção |
+| Histórico de liberações e rastreabilidade | Parte 2 — liberações e movimentos |
+| Custom Pages e building blocks do FPM | Partes 2 e 3 |
+| `sap.m.Wizard` dentro de uma Custom Page | Parte 2 — tela de entrada |
+| Draft e action sobre entidade ativa | Parte 2 — criação e liberação |
+| Custom Action FPM com operation binding | Parte 2 — liberação parcial |
+| Ciclo de vida com transições explícitas | Parte 3 — Manutencao |
+| Dependência entre material e execução | Parte 3 — parada e retomada |
+| Validação de associação por atributo | Parte 3 — localInstalacao igual ao da ordem |
+| Autorização por instância | Parte 3 — técnico responsável |
+| `Core.OperationAvailable` e Side Effects | Parte 3 — actions por status |
+| `Association to many` exposta como facet | Parte 4 — movimentos e ordens relacionadas |
+| `PresentationVariant` com `GroupBy` | Parte 4 — agrupamento na listagem |
+
+---
+
+## Checklist final
+
+- [ ] `cds compile '*' --to csn` passa sem erros.
+- [ ] `cds compile '*' --to edmx` passa sem erros.
+- [ ] `cds deploy --to sqlite` carrega todos os CSVs incluindo `_texts`.
+- [ ] `descricao` do material retorna em português com `Accept-Language: pt`.
+- [ ] `descricao` do material retorna em inglês com `Accept-Language: en`.
+- [ ] Action `cadastrarMateriaisEmLote` exige traduções `pt` e `en`.
+- [ ] A carga processa erros funcionais sem expor mensagens internas do banco.
+- [ ] Liberação de `RECEBIMENTO` incrementa ou cria estoque sem alterar reservado.
+- [ ] Liberação de `ESTORNO` incrementa disponível e reduz reservado.
+- [ ] Estornos acumulados ou concorrentes não superam o item de liberação original.
+- [ ] Cada chamada parcial é atômica e mantém histórico próprio.
+- [ ] Falha em qualquer item provoca rollback integral somente da chamada atual.
+- [ ] Liberações sucessivas acumulam quantidade sem duplicar movimentos.
+- [ ] A ordem transita entre `ABERTA`, `PARCIALMENTE_LIBERADA` e `LIBERADA` corretamente.
+- [ ] Duas liberações concorrentes não ultrapassam o saldo pendente.
+- [ ] Duas reservas da mesma ordem que usam o mesmo material e depósito são validadas pelo total agregado.
+- [ ] A Object Page usa `invoke()` para executar `liberarQuantidades`.
+- [ ] O app de entradas ativa o draft antes de executar `liberarOrdem`.
+- [ ] `Manutencao` só pode ser criada para ordem parcial ou totalmente liberada.
+- [ ] O início respeita `quantidadeMinimaInicio` de todos os itens.
+- [ ] A finalização exige atendimento integral dos materiais.
+- [ ] Parada por material exige uma nova liberação antes da retomada.
+- [ ] Nova liberação não retoma automaticamente a manutenção.
+- [ ] `localInstalacao` da manutenção deve coincidir com o da ordem.
+- [ ] Transições de status da manutenção respeitam as regras definidas.
+- [ ] `PATCH` direto do status da manutenção é rejeitado.
+- [ ] Usuários comuns acessam somente manutenções atribuídas a eles.
+- [ ] Apps `entradas` e `execucao` usam FPM e APIs públicas.
+- [ ] `npm run lint` ou UI5 linter passa nos novos apps.
+- [ ] Testes OPA5 cobrem navegação, draft, actions e mensagens.
+- [ ] Movimentos de estoque aparecem na Object Page da ordem.
+- [ ] Ordens relacionadas aparecem na Object Page da ordem de manutenção.
+- [ ] Listagem responsiva agrupa ordens principais e seus estornos.
+
+---
+
+## Problemas comuns esperados
+
+### descricao retorna sempre o mesmo texto independente do idioma
+
+Verifique se o campo está declarado com `localized` e se os dados de `_texts` foram carregados. O CAP só resolve a localização quando o modificador está presente e a tabela `_texts` tem o registro para o `locale` pedido.
+
+### Liberação de RECEBIMENTO falha por saldo insuficiente
+
+A verificação de saldo mínimo não deve ser executada para ordens do tipo `RECEBIMENTO` e `ESTORNO`. Ramifique a lógica antes da validação de estoque.
+
+### Manutencao aceita qualquer localInstalacao
+
+A validação precisa ocorrer no `before SAVE`. Leia o estado completo do draft e compare o local com a ordem persistida. Um `PATCH` parcial pode não conter `localInstalacao_ID` ou `ordem_ID` em `req.data`.
+
+### Botões de transição aparecem em todos os status
+
+Configure `Core.OperationAvailable` e os Side Effects das actions. O backend deve repetir a validação do status, mesmo quando o botão estiver oculto ou desabilitado.
+
+### Ordens de estorno não aparecem agrupadas
+
+Verifique se `grupoOrdem_ID`, `grupoOrdemCodigo` e `ordemNoGrupo` estão expostos, se o `PresentationVariant` contém `Visualizations` e se a tabela está configurada como `ResponsiveTable`. `GridTable` não suporta esse agrupamento.
+
+### Estornos repetidos devolvem mais estoque que a ordem original
+
+Calcule o total já estornado por `itemLiberacaoOrigem`. Faça a leitura com bloqueio dentro da mesma transação que reduz `quantidadeLiberada`, atualiza o estoque e registra o novo movimento.
+
+### Liberação parcial duplica movimentos ou ultrapassa o pendente
+
+Bloqueie a ordem antes de reler `quantidadeLiberada`. Valide novamente o saldo pendente no backend e gere o número da liberação dentro da mesma transação.
+
+### Manutenção retoma automaticamente após recebimento
+
+O recebimento altera apenas o estoque disponível. Depois dele, execute `liberarQuantidades` na ordem original. A manutenção deve permanecer `PARADA` até a action explícita `retomarManutencao`.
+
+### Custom Page abre sem recursos do FPM
+
+Confirme se o target do `manifest.json` usa `type: "Component"`, `name: "sap.fe.core.fpm"`, `contextPath` válido e um `viewName` pertencente ao namespace do app.
+
+---
+
+## Referências
+
+- [CAP — Localized Data](https://cap.cloud.sap/docs/guides/localized-data)
+- [CAP — Serving Fiori UIs](https://cap.cloud.sap/docs/guides/uis/fiori)
+- [CAP — Actions and Functions](https://cap.cloud.sap/docs/guides/providing-services#actions-functions)
+- [CAP — Authorization](https://cap.cloud.sap/docs/guides/security/authorization)
+- [UI5 — sap.m.Wizard](https://ui5.sap.com/#/api/sap.m.Wizard)
+- [UI5 — sap.m.ObjectStatus](https://ui5.sap.com/#/api/sap.m.ObjectStatus)
+- [Fiori Elements — Flexible Programming Model Explorer](https://ui5.sap.com/test-resources/sap/fe/core/fpmExplorer/index.html)
