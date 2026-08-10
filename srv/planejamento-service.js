@@ -374,7 +374,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     // Inserir os movimentos; e
     // Atualizar o status.
     try {
-      await this.liberarOrdemPorID(ID);
+      await this.liberarOrdemPorID(ID, req);
     } catch (error) {
       if (error instanceof ErroDeNegocio) {
         return req.reject(error.status, error.messageKey, error.args);
@@ -395,6 +395,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
    * é reutilizada pelo processamento em lote.
    *
    * @param {string} ID Identificador UUID da ordem.
+   * @param {cds.Request} req Requisição usada para identificar e autorizar o usuário.
    * @returns {Promise<void>}
    * @throws {ErroDeNegocio} Quando uma regra funcional impede a liberação.
    * @throws {Error} Quando ocorre uma falha inesperada de infraestrutura.
@@ -403,7 +404,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
    * Para a liberação individual o catch é tratado no onliberarOrdem
    * Para libeção via lote o catch é tratado no onProcessarLote
    */
-  async liberarOrdemPorID(ID) {
+  async liberarOrdemPorID(ID, req) {
     //Traz as entidades expostas pelo PlanejamentoService
     //Tanto este, como o comando abaixo, buscam definições
     //A diferença está onde vamos buscar
@@ -437,7 +438,6 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
      *    const Estoques = entidades.Estoques;
      *    const MovimentosEstoque = entidades.MovimentosEstoque;
      */
-
     //        PARA QUE SERVEM AS VARIÁVEIS CRIADAS?
     //Para que quando precisarmos fazer consultas ou alterações no banco,
     //o CAP tenha a referência(como um mapa ou a planta de uma casa)
@@ -467,6 +467,33 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
     //Se não existir, encerra a requisição com HTTP 404
     if (!ordem) throw new ErroDeNegocio(404, "ORDER_NOT_FOUND");
+
+    /*
+     * Valida a autorização dentro da própria regra de negócio.
+     *
+     * O filtro aplicado no READ protege somente as consultas. Uma action pode
+     * ser chamada diretamente pelo endpoint usando o UUID da ordem. Por isso,
+     * a autorização precisa ser repetida antes de qualquer validação funcional
+     * ou alteração de estoque.
+     *
+     * O administrador possui acesso global. Os demais usuários precisam ter
+     * uma entrada correspondente na view V_AcessosOrdem.
+     */
+    if (!req.user?.is("admin")) {
+      const acesso = await SELECT.one
+        .from("desafio.ordens.V_AcessosOrdem")
+        .where({
+          ordem_ID: ID,
+          matricula: req.user.id,
+        });
+
+      if (!acesso)
+        throw new ErroDeNegocio(403, "ORDER_ACCESS_DENIED", {
+          code: ordem.codigo,
+        });
+    }
+
+    // Somente um usuário autorizado pode conhecer e validar o estado da ordem.
 
     //Se a ordem não estiver "aberta" a liberação é interrompida
     if (ordem.status_code !== "ABERTA")
@@ -570,6 +597,28 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       return req.reject(404, "ORDER_NOT_FOUND");
     }
 
+    /*
+     * Protege a action de cancelamento contra chamadas diretas.
+     *
+     * O fato de uma ordem não aparecer na listagem do usuário não impede que
+     * o endpoint da action seja chamado diretamente. Antes de verificar o
+     * status ou atualizar a ordem, confirmamos o acesso funcional do usuário.
+     */
+    if (!req.user?.is("admin")) {
+      const acesso = await SELECT.one
+        .from("desafio.ordens.V_AcessosOrdem")
+        .where({
+          ordem_ID: ID,
+          matricula: req.user.id,
+        });
+
+      if (!acesso)
+        return req.reject(403, "ORDER_ACCESS_DENIED", {
+          code: ordem.codigo,
+        });
+    }
+
+    // Somente ordens abertas podem ser canceladas.
     //Se a ordem não estiver "aberta" a liberação é interrompida
     if (ordem.status_code !== "ABERTA") {
       return req.reject(409, "ORDER_NOT_OPEN", { code: ordem.codigo });
@@ -651,7 +700,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       // Embora não produza automaticamente um COMMIT separado para cada item.
       try {
         //liberarOrdemPorID contém a regra de negócio para liberar cada ordem
-        await this.liberarOrdemPorID(item.ordem_ID);
+        await this.liberarOrdemPorID(item.ordem_ID, req);
 
         await UPDATE(ItensLoteLiberacao, item.ID).with({
           status_code: "SUCESSO",
