@@ -89,7 +89,12 @@ entity Ordens : cuid, managed {
     prioridade          : Association to Prioridades default 'MEDIA'  @Common.Label: '{i18n>priority}';
     dataInicioPlanejada : DateTime not null;
     dataFimPlanejada    : DateTime not null;
-    valorEstimado       : Decimal(13, 2) default 0;
+    //O @assert.range.message solicita que o CAP use a chave internacionalizada
+    //em vez da mensagem genérica.
+    valorEstimado       : Decimal(13, 2) default 0                    @assert.range: [
+        0,
+        99999999999.99
+    ]  @assert.range.message: 'INVALID_ESTIMATED_VALUE';
     observacao          : String(500);
     reservas            : Composition of many ReservasMateriais
                               on reservas.ordem = $self;

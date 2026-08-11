@@ -2,6 +2,8 @@
 
 **Severidade:** 🟧 Média
 
+**Status:** 🟢 Resolvido
+
 ## Base
 
 - Arquivo: `db/schema.cds:88`.
@@ -31,3 +33,29 @@ valorEstimado : Decimal(13, 2) default 0 @assert.range: [0, 99999999999.99];
 ## Impacto
 
 Ordens podem ser salvas com estimativa financeira inválida, afetando relatórios e decisões operacionais.
+
+## Resolução
+
+- Adicionada a restrição declarativa `@assert.range` ao campo `valorEstimado`.
+- Adicionada validação imediata nos eventos `CREATE` e `UPDATE` do draft.
+- Mantida validação no evento `SAVE` para proteger a ativação.
+- Internacionalizada a mensagem de valor inválido em português e inglês.
+- O teste de ativação cria um draft válido e simula diretamente no banco um registro inválido preexistente, pois a API já impede sua criação.
+
+## Evidência
+
+Comando executado:
+
+```bash
+env -u NODE_OPTIONS npx cds-test \
+  -o "valor estimado negativo" \
+  test/integration/srv/PlanejamentoService.integration.test.js
+```
+
+Resultado:
+
+```text
+✔ rejeita valor estimado negativo
+✔ rejeita valor estimado negativo na ativação do draft
+2 passed
+```

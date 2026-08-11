@@ -63,6 +63,9 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       Ordens.drafts,
       this.validarPeriodoDaOrdem,
     );
+    // Rejeita imediatamente valores estimados fora do intervalo durante
+    // a criação ou edição do draft, antes da tentativa de ativação.
+    this.before(["CREATE", "UPDATE"], Ordens.drafts, this.validarValorEstimado);
     this.before("SAVE", Ordens, this.validarOrdemAntesDeSalvar);
 
     this.on("liberarOrdem", Ordens, this.onliberarOrdem);
@@ -353,6 +356,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
 
   async validarOrdemAntesDeSalvar(req) {
     await this.validarPeriodoDaOrdem(req);
+    this.validarValorEstimado(req);
   }
 
   /**
@@ -874,5 +878,27 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         colunas.push({ ref: [campo] });
       }
     }
+  }
+
+  /**
+   * Valida o valor estimado informado durante a edição de uma ordem.
+   *
+   * A validação explícita é necessária para fornecer feedback imediato no
+   * draft. A anotação `@assert.range` permanece como proteção declarativa
+   * durante a ativação e a persistência da entidade ativa.
+   *
+   * @param {cds.Request} req Requisição CAP com o valor informado no payload.
+   * @returns {void} Não retorna valor quando a validação termina.
+   */
+  validarValorEstimado(req) {
+    const valorEstimado = req.data?.valorEstimado;
+
+    // Em PATCH, campos não alterados não aparecem no payload.
+    if (valorEstimado === undefined || valorEstimado === null) return;
+
+    const valorNumerico = Number(valorEstimado);
+
+    if (valorNumerico < 0 || valorNumerico > 99999999999.99)
+      return req.error(400, "INVALID_ESTIMATED_VALUE", "valorEstimado");
   }
 };

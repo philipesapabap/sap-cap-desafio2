@@ -36,7 +36,7 @@
 const cds = require("@sap/cds");
 const assert = require("node:assert/strict");
 const { expect } = cds.test;
-const { DELETE, INSERT, SELECT } = cds.ql;
+const { DELETE, INSERT, SELECT, UPDATE } = cds.ql;
 
 const SERVICE_URL = "/planejamento";
 const USERS = Object.freeze({
@@ -307,8 +307,16 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
   it("rejeita valor estimado negativo na ativação do draft", async () => {
     await POST(
       `${SERVICE_URL}/Ordens`,
-      buildDraftPayload(IDS.draftNegativeActivation, { valorEstimado: -10 }),
+      buildDraftPayload(IDS.draftNegativeActivation),
       AUTH.admin,
+    );
+
+    // Simula um draft inválido preexistente sem passar pela API, pois a
+    // validação de CREATE já impede que um valor negativo seja informado.
+    await db.run(
+      UPDATE("PlanejamentoService.Ordens.drafts")
+        .set({ valorEstimado: -10 })
+        .where({ ID: IDS.draftNegativeActivation }),
     );
 
     await expectRequestError(
@@ -1077,7 +1085,15 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       }
 
       expect(error.response.status).to.equal(expectedStatus);
-      expect(error.response.data?.error?.message).to.include(expectedMessage);
+      const responseError = error.response.data?.error;
+      const returnedMessages = [
+        responseError?.message,
+        ...(responseError?.details || []).map((detail) => detail.message),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      expect(returnedMessages).to.include(expectedMessage);
     }
   }
 });
