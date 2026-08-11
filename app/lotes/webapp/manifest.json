@@ -1,5 +1,5 @@
 {
-  "_version": "1.85.0",
+  "_version": "2.0.0",
   "sap.app": {
     "id": "treinamento.cap.lotes",
     "type": "application",
