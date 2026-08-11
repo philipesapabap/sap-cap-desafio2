@@ -58,11 +58,12 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       }
     });
 
-    this.before(
-      ["CREATE", "UPDATE"],
-      Ordens.drafts,
-      this.validarPeriodoDaOrdem,
-    );
+    // Valida o período na criação e nas alterações parciais do draft.
+    // No PATCH, a tela envia somente os campos alterados; a rotina combina esse
+    // delta com os valores já persistidos antes de comparar o início e o fim.
+    // PATCH é o evento específico do draft e funciona como alias de UPDATE no CAP.
+    this.before(["CREATE", "PATCH"], Ordens.drafts, this.validarPeriodoDaOrdem);
+
     // Rejeita imediatamente valores estimados fora do intervalo durante
     // a criação ou edição do draft, antes da tentativa de ativação.
     this.before(["CREATE", "UPDATE"], Ordens.drafts, this.validarValorEstimado);
@@ -393,9 +394,6 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const fimMs = Date.parse(fim);
 
     if (fimMs <= inicioMs) {
-      //return req.error(
-      //  400,
-      //  "Fim planejado deve ser maior que início planejado",
       //Não vou amarrar pela data fim, porque:
       // Se após notar que a data de fim ficou inferior, posso ajustar a do inicio e
       //Retira a msg de erro do fim
@@ -405,13 +403,17 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       //Erro sem Target -> Sai do campos, mas vira pop-up/mensagem geral;
       //Erro com Target -> Marca o campos, mas pode ficar preso nele
       //"dataFimPlanejada",
-      // );
       //Alternativa - Também não resolve
       const campoAlterado = req.data.dataInicioPlanejada
         ? "dataInicioPlanejada"
         : "dataFimPlanejada";
-
-      return req.error(400, "INVALID_PLANNED_PERIOD", campoAlterado);
+      /*
+       * O uso de req.reject é intencional.
+       * Em drafts, req.error com target pode ser convertido pelo CAP em uma mensagem
+       * persistida, permitindo que o PATCH termine com sucesso. A regra do negócio
+       * exige rejeitar a alteração e impedir a persistência do período inválido.
+       */
+      return req.reject(400, "INVALID_PLANNED_PERIOD", campoAlterado);
     }
   }
 

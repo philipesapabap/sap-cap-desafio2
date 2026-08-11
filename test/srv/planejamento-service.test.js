@@ -153,14 +153,14 @@ describe("PlanejamentoService — unidades dos handlers", () => {
   /**
    * Dado: início planejado posterior ao fim e o início presente no payload.
    * Quando: `validarDatasPeriodo` detecta a inversão cronológica.
-   * Então: registra erro 400 apontando para `dataInicioPlanejada`.
+   * Então: rejeita a requisição com erro 400 em `dataInicioPlanejada`.
    * Por quê: indicar o campo alterado ajuda a UI a exibir a validação no local correto.
    */
   it("rejeita período inválido no campo alterado", () => {
-    const errors = [];
+    const rejects = [];
     const req = {
       data: { dataInicioPlanejada: "2026-08-10T11:00:00Z" },
-      error: (...args) => errors.push(args),
+      reject: (...args) => rejects.push(args),
     };
 
     service.validarDatasPeriodo(
@@ -169,12 +169,8 @@ describe("PlanejamentoService — unidades dos handlers", () => {
       "2026-08-10T10:00:00Z",
     );
 
-    expect(errors).to.deep.equal([
-      [
-        400,
-        "Período planejado inválido: fim deve ser maior que início",
-        "dataInicioPlanejada",
-      ],
+    expect(rejects).to.deep.equal([
+      [400, "INVALID_PLANNED_PERIOD", "dataInicioPlanejada"],
     ]);
   });
 });
