@@ -12,4 +12,4 @@
 | F008 | 🟨 Baixa | 🔵 Pendente | UI5 linter rejeita a versão dos dois manifests. |
 | F009 | 🟧 Média | 🔵 Pendente | Patch do draft não valida o período completo. |
 | F010 | 🟥 Alta | 🔵 Pendente | Escopo de leitura impede ativar um draft novo. |
-| F011 | 🟧 Média | 🔵 Pendente | Processamento persiste, mas os itens permanecem desatualizados na Object Page. |
+| F011 | 🟧 Média | 🟢 Resolvido | A action solicita a releitura do status e dos itens após processar o lote. |

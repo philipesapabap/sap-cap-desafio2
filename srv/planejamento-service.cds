@@ -49,6 +49,20 @@ service PlanejamentoService @(
     @odata.draft.enabled
     entity LotesLiberacao         as projection on db.LotesLiberacao
         actions {
+            /*
+             * Solicita que o Fiori elements releia o status do lote, sua
+             * descrição associada e os itens após executar a action.
+             *
+             * Sem esses SideEffects, o processamento é persistido no backend,
+             * mas a Object Page pode continuar exibindo os valores anteriores.
+             */
+            @Common.SideEffects: {
+                TargetProperties: ['in/status_code'],
+                TargetEntities  : [
+                    in.status,
+                    in.itens
+                ]
+            }
             action processarLote() returns LotesLiberacao;
         };
 
