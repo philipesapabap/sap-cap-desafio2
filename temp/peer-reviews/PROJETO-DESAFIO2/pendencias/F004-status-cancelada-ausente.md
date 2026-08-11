@@ -37,3 +37,12 @@ BLOQUEADA;Bloqueada
 ## Impacto
 
 Após cancelar, a UI pode exibir status vazio. Em HANA, a operação pode falhar caso a restrição referencial seja aplicada.
+
+## Resolução
+
+**Status:** 🟢 Resolvido
+
+- O código `CANCELADA` está presente no catálogo `StatusOrdem`.
+- Os textos em português e inglês estão cadastrados em `StatusOrdem_texts`.
+- O teste HTTP `cancela ordem e resolve o texto do status` confirmou que a action grava o código e que `$expand=status` retorna a associação com texto.
+- Resultado da validação: `1 passed` em SQLite.
