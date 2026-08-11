@@ -596,57 +596,118 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         code: ordem.codigo,
       });
 
-    //Loop para processamento de cada reserva
-    //Para cada ordem(loop), o código busca(selet) o estoque correspondente ao material e depósito
+    /*
+     * Fase 1 — identificar os estoques diferentes usados pela ordem.
+     *
+     * As reservas continuam individualizadas. O Map apenas evita bloquear
+     * repetidamente o mesmo registro quando duas reservas usam a mesma
+     * combinação de material e depósito.
+     */
+    const alvosPorChave = new Map();
+
     for (const reserva of reservas) {
-      //Ao encontrar a combinação Material + Depósito
-      // o estoque é bloqueado exclusivamente para este procssamento
-      //Protege o saldo contra consumo concorrente por ordens diferentes
+      const chave = JSON.stringify([
+        reserva.material_ID,
+        reserva.deposito_ID,
+      ]);
+
+      if (!alvosPorChave.has(chave)) {
+        alvosPorChave.set(chave, {
+          chave,
+          material_ID: reserva.material_ID,
+          deposito_ID: reserva.deposito_ID,
+        });
+      }
+    }
+
+    /*
+     * Todas as ordens adquirem os bloqueios na mesma sequência. Isso reduz
+     * o risco de deadlock quando ordens concorrentes usam vários estoques.
+     * A ordenação afeta somente os alvos técnicos, não as reservas.
+     */
+    const alvosOrdenados = [...alvosPorChave.values()].sort((a, b) => {
+      const comparacaoMaterial = a.material_ID.localeCompare(b.material_ID);
+
+      return comparacaoMaterial !== 0
+        ? comparacaoMaterial
+        : a.deposito_ID.localeCompare(b.deposito_ID);
+    });
+
+    /*
+     * Fase 2 — bloquear todos os estoques antes de validar ou alterar dados.
+     * Os bloqueios permanecem ativos até o commit ou rollback da requisição.
+     */
+    const estoquesBloqueados = new Map();
+
+    for (const alvo of alvosOrdenados) {
       const estoque = await SELECT.one
         .from(Estoques)
         .where({
-          material_ID: reserva.material_ID,
-          deposito_ID: reserva.deposito_ID,
+          material_ID: alvo.material_ID,
+          deposito_ID: alvo.deposito_ID,
         })
         .forUpdate();
 
-      //Valida o estoque
-      //Nessa validação temos a rejeição da liberação quando:
-      // 1. Não existe estoque para o material e deposito;
-      // 2. A quantidade disponível é menor que a quantidade necessária
-      // A quantidades setadas no estoque podem vir do banco como string, por isso o uso do number
+      estoquesBloqueados.set(alvo.chave, {
+        estoque,
+        quantidadeDisponivelProjetada: estoque
+          ? Number(estoque.quantidadeDisponivel)
+          : 0,
+        quantidadeReservadaProjetada: estoque
+          ? Number(estoque.quantidadeReservada || 0)
+          : 0,
+      });
+    }
+
+    /*
+     * Fase 3 — simular o consumo de todas as reservas em memória.
+     * Nenhum UPDATE ou INSERT ocorreu até aqui. Se uma reserva falhar, a
+     * ordem inteira permanece sem mutações e o lote pode seguir para o item
+     * seguinte.
+     */
+    for (const reserva of reservas) {
+      const chave = JSON.stringify([
+        reserva.material_ID,
+        reserva.deposito_ID,
+      ]);
+      const controle = estoquesBloqueados.get(chave);
+      const quantidadeNecessaria = Number(reserva.quantidadeNecessaria);
+
       if (
-        !estoque ||
-        Number(estoque.quantidadeDisponivel) <
-          Number(reserva.quantidadeNecessaria)
-      )
+        !controle?.estoque ||
+        controle.quantidadeDisponivelProjetada < quantidadeNecessaria
+      ) {
         throw new ErroDeNegocio(409, "INSUFFICIENT_STOCK", {
           code: ordem.codigo,
         });
+      }
 
-      //Move a quantidade disponível para reservada
-      //A quantidade total não muda. A quantidade apenas passa de disponível para reservada
-      //Atualiza enquanto o bloqueio realizado pelo forUpdate continua ativo
-      await UPDATE(Estoques, estoque.ID).with({
-        quantidadeDisponivel:
-          Number(estoque.quantidadeDisponivel) -
-          Number(reserva.quantidadeNecessaria),
-        quantidadeReservada:
-          Number(estoque.quantidadeReservada || 0) +
-          Number(reserva.quantidadeNecessaria),
-      });
+      controle.quantidadeDisponivelProjetada -= quantidadeNecessaria;
+      controle.quantidadeReservadaProjetada += quantidadeNecessaria;
+    }
 
-      //Registra o movimento
-      //Importante para um histórico das movimentações para rastreabilidade
-      await INSERT.into(MovimentosEstoque).entries({
-        ordem_ID: ID,
-        material_ID: reserva.material_ID,
-        deposito_ID: reserva.deposito_ID,
-        quantidade: reserva.quantidadeNecessaria,
-        tipo: "RESERVA",
-        origem: "liberarOrdem",
+    /*
+     * Fase 4 — todas as reservas passaram. Agora cada estoque recebe somente
+     * um UPDATE com seu saldo final projetado.
+     */
+    for (const controle of estoquesBloqueados.values()) {
+      await UPDATE(Estoques, controle.estoque.ID).with({
+        quantidadeDisponivel: controle.quantidadeDisponivelProjetada,
+        quantidadeReservada: controle.quantidadeReservadaProjetada,
       });
     }
+
+    // Mantém um movimento para cada reserva, mas envia todos em um único INSERT.
+    const movimentos = reservas.map((reserva) => ({
+      ordem_ID: ID,
+      material_ID: reserva.material_ID,
+      deposito_ID: reserva.deposito_ID,
+      quantidade: reserva.quantidadeNecessaria,
+      tipo: "RESERVA",
+      origem: "liberarOrdem",
+    }));
+
+    await INSERT.into(MovimentosEstoque).entries(movimentos);
     //Atualiza o status da ordem
     //Quando do sucesso da movimentação a ordem para de ABERTA para LIBERADA
     await UPDATE(Ordens, ID).with({

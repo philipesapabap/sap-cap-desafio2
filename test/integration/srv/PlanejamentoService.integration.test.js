@@ -11,26 +11,28 @@
  * Teste 6 - rejeita período inválido na criação do draft.
  * Teste 7 - rejeita período inválido no patch do draft.
  * Teste 8 - rejeita valor estimado negativo.
- * Teste 9 - libera ordem válida e movimenta estoque.
- * Teste 10 - rejeita liberação de ordem inexistente.
- * Teste 11 - rejeita liberação de ordem não aberta.
- * Teste 12 - rejeita liberação sem reservas.
- * Teste 13 - reverte liberação individual sem estoque.
- * Teste 14 - rejeita liberação sem acesso.
- * Teste 15 - rejeita cancelamento sem acesso.
- * Teste 16 - exige motivo no cancelamento.
- * Teste 17 - cancela ordem e resolve o texto do status.
- * Teste 18 - rejeita cancelamento de ordem não aberta.
- * Teste 19 - rejeita cancelamento de ordem inexistente.
- * Teste 20 - processa lote integralmente válido.
- * Teste 21 - continua lote após falha funcional de um item.
- * Teste 22 - usa o status contratual para lote com erro.
- * Teste 23 - mantém atomicidade do item que falha no lote.
- * Teste 24 - rejeita lote já processado.
- * Teste 25 - rejeita lote aberto sem itens pendentes.
- * Teste 26 - rejeita lote inexistente.
- * Teste 27 - ativa um draft válido.
- * Teste 28 - rejeita valor estimado negativo na ativação do draft.
+ * Teste 9 - ativa um draft válido.
+ * Teste 10 - rejeita valor estimado negativo na ativação do draft.
+ * Teste 11 - libera ordem válida e movimenta estoque.
+ * Teste 12 - rejeita estoque duplicado para material e depósito.
+ * Teste 13 - considera o consumo acumulado de reservas do mesmo estoque.
+ * Teste 14 - rejeita liberação de ordem inexistente.
+ * Teste 15 - rejeita liberação de ordem não aberta.
+ * Teste 16 - rejeita liberação sem reservas.
+ * Teste 17 - reverte liberação individual sem estoque.
+ * Teste 18 - rejeita liberação sem acesso.
+ * Teste 19 - rejeita cancelamento sem acesso.
+ * Teste 20 - exige motivo no cancelamento.
+ * Teste 21 - cancela ordem e resolve o texto do status.
+ * Teste 22 - rejeita cancelamento de ordem não aberta.
+ * Teste 23 - rejeita cancelamento de ordem inexistente.
+ * Teste 24 - processa lote integralmente válido.
+ * Teste 25 - continua lote após falha funcional de um item.
+ * Teste 26 - usa o status contratual para lote com erro.
+ * Teste 27 - mantém atomicidade do item que falha no lote.
+ * Teste 28 - rejeita lote já processado.
+ * Teste 29 - rejeita lote aberto sem itens pendentes.
+ * Teste 30 - rejeita lote inexistente.
  */
 
 const cds = require("@sap/cds");
@@ -76,6 +78,7 @@ const IDS = Object.freeze({
   stockA: "e1000000-0000-4000-a000-000000000001",
   stockB: "e2000000-0000-4000-a000-000000000001",
   stockC: "e3000000-0000-4000-a000-000000000001",
+  stockDuplicate: "e4000000-0000-4000-a000-000000000001",
   success: "f1000000-0000-4000-a000-000000000001",
   risk: "f2000000-0000-4000-a000-000000000002",
   withoutReservations: "f3000000-0000-4000-a000-000000000003",
@@ -83,6 +86,7 @@ const IDS = Object.freeze({
   released: "f5000000-0000-4000-a000-000000000005",
   successSecond: "f6000000-0000-4000-a000-000000000006",
   partial: "f7000000-0000-4000-a000-000000000007",
+  repeatedStock: "f8000000-0000-4000-a000-000000000008",
   draftPeriod: "d1000000-0000-4000-a000-000000000001",
   draftNegative: "d2000000-0000-4000-a000-000000000002",
   draftValid: "d3000000-0000-4000-a000-000000000003",
@@ -353,6 +357,81 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     expect(Number(stockA.quantidadeDisponivel)).to.equal(8);
     expect(Number(stockB.quantidadeDisponivel)).to.equal(4);
     expect(movements).to.have.length(2);
+  });
+
+  /**
+   * Dado: um estoque já cadastrado para determinada combinação de material e depósito.
+   * Quando: outro registro tenta usar a mesma combinação com um UUID diferente.
+   * Então: o banco rejeita a duplicidade e mantém somente o estoque original.
+   * Por quê: cada chave usada no saldo projetado precisa representar uma única linha física.
+   */
+  it("rejeita estoque duplicado para material e depósito", async () => {
+    await assert.rejects(
+      db.run(
+        INSERT.into(entities.Estoques).entries(
+          buildStock(IDS.stockDuplicate, IDS.materialA, 99),
+        ),
+      ),
+    );
+
+    const estoques = await SELECT.from(entities.Estoques).where({
+      material_ID: IDS.materialA,
+      deposito_ID: IDS.deposit,
+    });
+
+    expect(estoques).to.have.length(1);
+    expect(estoques[0].ID).to.equal(IDS.stockA);
+  });
+
+  /**
+   * Dado: uma ordem com duas reservas de seis unidades sobre o mesmo saldo dez.
+   * Quando: a regra simula o consumo acumulado antes de persistir.
+   * Então: a liberação falha, o estoque permanece dez e nenhum movimento é criado.
+   * Por quê: validar cada reserva isoladamente aprovaria incorretamente um total de doze.
+   */
+  it("considera o consumo acumulado de reservas do mesmo estoque", async () => {
+    await db.run(
+      INSERT.into(entities.Ordens).entries(
+        buildOrder(IDS.repeatedStock, "T-SALDO-ACUMULADO", USERS.authorized),
+      ),
+    );
+    await db.run(
+      INSERT.into(entities.ReservasMateriais).entries([
+        buildReservation(
+          "b8000000-0000-4000-a000-000000000001",
+          IDS.repeatedStock,
+          IDS.materialA,
+          6,
+        ),
+        buildReservation(
+          "b8000000-0000-4000-a000-000000000002",
+          IDS.repeatedStock,
+          IDS.materialA,
+          6,
+        ),
+      ]),
+    );
+
+    await expectRequestError(
+      POST(
+        actionUrl("Ordens", IDS.repeatedStock, "liberarOrdem"),
+        {},
+        AUTH.admin,
+      ),
+      409,
+      "Estoque insuficiente",
+    );
+
+    const estoque = await SELECT.one.from(entities.Estoques, IDS.stockA);
+    const ordem = await SELECT.one.from(entities.Ordens, IDS.repeatedStock);
+    const movimentos = await SELECT.from(entities.MovimentosEstoque).where({
+      ordem_ID: IDS.repeatedStock,
+    });
+
+    expect(Number(estoque.quantidadeDisponivel)).to.equal(10);
+    expect(Number(estoque.quantidadeReservada)).to.equal(0);
+    expect(ordem.status_code).to.equal("ABERTA");
+    expect(movimentos).to.have.length(0);
   });
 
   /**
@@ -720,6 +799,7 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       IDS.released,
       IDS.successSecond,
       IDS.partial,
+      IDS.repeatedStock,
       IDS.draftPeriod,
       IDS.draftNegative,
       IDS.draftValid,
@@ -759,7 +839,9 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     await db.run(DELETE.from(entities.Ordens).where({ ID: { in: orderIds } }));
     await db.run(
       DELETE.from(entities.Estoques).where({
-        ID: { in: [IDS.stockA, IDS.stockB, IDS.stockC] },
+        ID: {
+          in: [IDS.stockA, IDS.stockB, IDS.stockC, IDS.stockDuplicate],
+        },
       }),
     );
     await db.run(

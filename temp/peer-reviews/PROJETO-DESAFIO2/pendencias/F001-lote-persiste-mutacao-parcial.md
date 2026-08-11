@@ -2,6 +2,8 @@
 
 **Severidade:** 🟥 Alta
 
+**Status:** 🟢 Resolvido
+
 ## Base
 
 - Arquivo: `srv/planejamento-service.js:459` e `srv/planejamento-service.js:610`.
@@ -49,3 +51,31 @@ for (const { estoque, reserva } of movimentos) {
 ## Impacto
 
 O saldo e o histórico ficam incompatíveis com o resultado exibido no lote. Um reprocessamento pode consumir novamente quantidades já movimentadas.
+
+## Resolução
+
+`liberarOrdemPorID` passou a executar quatro fases por ordem:
+
+1. Identifica as combinações distintas de material e depósito.
+2. Ordena e bloqueia os estoques com `forUpdate()`.
+3. Simula todas as reservas usando saldos projetados, sem escrever no banco.
+4. Somente após a validação completa atualiza cada estoque, insere os movimentos em lote e libera a ordem.
+
+As reservas permanecem individualizadas nos movimentos. Quando duas reservas
+usam o mesmo estoque, o saldo projetado considera o consumo acumulado. Falhas
+funcionais ocorrem antes de qualquer mutação; falhas técnicas continuam sendo
+propagadas para rollback da requisição.
+
+O modelo também recebeu `@assert.unique.materialDeposito` em `Estoques`. O UUID
+continua sendo a chave técnica, enquanto material e depósito formam a chave
+funcional única usada pelo bloqueio e pelo saldo projetado.
+
+## Validações
+
+- O CDS compilou a restrição como `UNIQUE (material_ID, deposito_ID)` para SQL e HANA.
+- Testes focados SQLite: 5 de 5 passaram, incluindo unicidade, consumo acumulado e atomicidade do item do lote.
+- Suíte unitária: 8 de 8 passaram.
+- Suíte HTTP/SQLite completa: 28 de 30 passaram; as duas falhas restantes são preexistentes e correspondem ao F010 e à expectativa textual do motivo obrigatório.
+- Testes HANA da nova lógica: atomicidade do lote, rollback individual, saldo acumulado, mesma ordem concorrente, estoque compartilhado e ordem inversa de locks passaram.
+- Jornada Fiori de Lotes: 45 de 45 asserções passaram.
+- A restrição única foi validada no SQLite e no DDL HANA; sua execução no HDI depende do próximo deploy do modelo.

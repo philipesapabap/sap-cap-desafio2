@@ -2,15 +2,8 @@
 
 ## Correções bloqueantes
 
-1. Garantir atomicidade por item no lote.
-2. Validar acesso dentro das actions.
-3. Preservar a semântica do filtro virtual.
-4. Corrigir os códigos de status.
-5. Bloquear valor estimado negativo.
-6. Validar o período no patch do draft.
-7. Permitir que o criador ative um draft novo.
-8. Corrigir a URL dos testes HTTP.
-9. Atualizar status e itens após processar um lote no Fiori elements.
+- F001 a F009 e F011 foram resolvidos e validados.
+- F010 está parcialmente resolvido; a regra restante foi transferida pelo tutor para uma Change Request do Desafio 3.
 
 ## Especificação ainda não implementada
 
@@ -34,7 +27,7 @@
 - Pontos 7 a 10: handlers presentes, com defeito no filtro composto, validação incompleta e bloqueio na ativação de draft novo.
 - Ponto 11: implementado, porém sem autorização dentro da action.
 - Ponto 12: implementado, porém com catálogo de status inconsistente.
-- Ponto 13: não deve ser considerado concluído enquanto F001, F005 e F011 permanecerem abertos.
+- Ponto 13: concluído após a resolução de F001, F005 e F011, com validações em SQLite, HANA/HDI e Fiori elements.
 - Pontos 14 a 18: parciais; debug, cenários negativos no `.http` e respostas conceituais faltam. Os testes automatizados de backend foram adicionados.
 - Ponto 19: as três melhorias obrigatórias faltam.
 - Pontos 20 e 21: entrega e checklist final incompletos.

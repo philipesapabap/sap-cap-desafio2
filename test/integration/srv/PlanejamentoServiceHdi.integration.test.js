@@ -9,19 +9,22 @@
  * profile `hybrid`, grava fixtures sintéticas no HDI e remove tudo ao final.
  *
  * Teste 1 - confirma o HANA, a carga inicial e as views implantadas.
- * Teste 2 - serializa duas liberações concorrentes da mesma ordem.
- * Teste 3 - impede consumo concorrente acima do saldo compartilhado.
- * Teste 4 - reverte integralmente uma liberação individual sem saldo.
- * Teste 5 - mantém atomicidade da ordem que falha dentro do lote.
- * Teste 6 - preserva a semântica de `or` no filtro virtual no HANA.
- * Teste 7 - resolve o domínio do status após cancelar uma ordem.
- * Teste 8 - usa o status contratual quando o lote termina com erro.
+ * Teste 2 - rejeita estoque duplicado para material e depósito.
+ * Teste 3 - considera o consumo acumulado de reservas do mesmo estoque.
+ * Teste 4 - serializa duas liberações concorrentes da mesma ordem.
+ * Teste 5 - impede consumo concorrente acima do saldo compartilhado.
+ * Teste 6 - evita deadlock com estoques solicitados em ordens inversas.
+ * Teste 7 - reverte integralmente uma liberação individual sem saldo.
+ * Teste 8 - mantém atomicidade da ordem que falha dentro do lote.
+ * Teste 9 - preserva a semântica de `or` no filtro virtual no HANA.
+ * Teste 10 - resolve o domínio do status após cancelar uma ordem.
+ * Teste 11 - usa o status contratual quando o lote termina com erro.
  */
 
 const assert = require("node:assert/strict");
 const cds = require("@sap/cds");
 const { expect } = cds.test;
-const { DELETE, INSERT, SELECT } = cds.ql;
+const { DELETE, INSERT, SELECT, UPDATE } = cds.ql;
 
 const RUN = process.env.RUN_PLANEJAMENTO_HDI_INTEGRATION === "true";
 const describeIntegration = RUN ? describe : describe.skip;
@@ -37,6 +40,7 @@ const IDS = Object.freeze({
   materialB: "a9000000-0000-4000-a000-000000000002",
   stockA: "e9000000-0000-4000-a000-000000000001",
   stockB: "e9000000-0000-4000-a000-000000000002",
+  stockDuplicate: "e9000000-0000-4000-a000-000000000003",
   sameOrder: "f9000000-0000-4000-a000-000000000001",
   competingA: "f9000000-0000-4000-a000-000000000002",
   competingB: "f9000000-0000-4000-a000-000000000003",
@@ -45,6 +49,9 @@ const IDS = Object.freeze({
   risk: "f9000000-0000-4000-a000-000000000006",
   cancel: "f9000000-0000-4000-a000-000000000007",
   batchError: "f9000000-0000-4000-a000-000000000008",
+  repeatedStock: "f9000000-0000-4000-a000-000000000009",
+  inverseA: "f9000000-0000-4000-a000-000000000010",
+  inverseB: "f9000000-0000-4000-a000-000000000011",
   lotPartial: "d9000000-0000-4000-a000-000000000001",
   lotError: "d9000000-0000-4000-a000-000000000002",
 });
@@ -57,6 +64,9 @@ const ORDER_IDS = Object.freeze([
   IDS.risk,
   IDS.cancel,
   IDS.batchError,
+  IDS.repeatedStock,
+  IDS.inverseA,
+  IDS.inverseB,
 ]);
 const LOT_IDS = Object.freeze([IDS.lotPartial, IDS.lotError]);
 
@@ -69,6 +79,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
 
   before(async () => {
     test.axios.defaults.auth = AUTH.admin.auth;
+    test.axios.defaults.headers.common["Accept-Language"] = "pt";
     db = await cds.connect.to("db");
 
     if (db.kind !== "hana") {
@@ -111,6 +122,77 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     expect(users).to.have.length(2);
     expect(status).to.equal(200);
     expect(data.value).to.be.an("array");
+  });
+
+  /**
+   * Dado: um estoque HDI já cadastrado para determinado material e depósito.
+   * Quando: outro UUID tenta repetir a mesma combinação funcional.
+   * Então: a restrição única do HANA rejeita a inserção.
+   * Por quê: o saldo projetado depende de uma correspondência física inequívoca.
+   */
+  it("rejeita estoque duplicado para material e depósito no HANA", async () => {
+    await assert.rejects(
+      db.run(
+        INSERT.into(entities.Estoques).entries(
+          buildStock(IDS.stockDuplicate, IDS.materialA, 99),
+        ),
+      ),
+    );
+
+    const estoques = await SELECT.from(entities.Estoques).where({
+      material_ID: IDS.materialA,
+      deposito_ID: IDS.deposit,
+    });
+
+    expect(estoques).to.have.length(1);
+    expect(estoques[0].ID).to.equal(IDS.stockA);
+  });
+
+  /**
+   * Dado: duas reservas de seis unidades para o mesmo estoque de dez.
+   * Quando: a ordem é validada usando o saldo projetado acumulado.
+   * Então: recebe 409 sem alterar estoque, ordem ou movimentos.
+   * Por quê: cada reserva isolada caberia, mas o total de doze não cabe.
+   */
+  it("considera o consumo acumulado do mesmo estoque no HANA", async () => {
+    await insertOrders([
+      buildOrder(IDS.repeatedStock, "HDI-SALDO-ACUMULADO"),
+    ]);
+    await insertReservations([
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000013",
+        IDS.repeatedStock,
+        IDS.materialA,
+        6,
+      ),
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000014",
+        IDS.repeatedStock,
+        IDS.materialA,
+        6,
+      ),
+    ]);
+
+    await expectRequestError(
+      POST(
+        actionUrl("Ordens", IDS.repeatedStock, "liberarOrdem"),
+        {},
+        AUTH.admin,
+      ),
+      409,
+      "Estoque insuficiente",
+    );
+
+    const estoque = await SELECT.one.from(entities.Estoques, IDS.stockA);
+    const ordem = await SELECT.one.from(entities.Ordens, IDS.repeatedStock);
+    const movimentos = await SELECT.from(entities.MovimentosEstoque).where({
+      ordem_ID: IDS.repeatedStock,
+    });
+
+    expect(Number(estoque.quantidadeDisponivel)).to.equal(10);
+    expect(Number(estoque.quantidadeReservada)).to.equal(0);
+    expect(ordem.status_code).to.equal("ABERTA");
+    expect(movimentos).to.have.length(0);
   });
 
   /**
@@ -191,6 +273,71 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     expect(orders.filter(({ status_code }) => status_code === "LIBERADA")).to.have.length(1);
     expect(orders.filter(({ status_code }) => status_code === "ABERTA")).to.have.length(1);
     expect(movements).to.have.length(1);
+  });
+
+  /**
+   * Dado: duas ordens concorrentes que usam os mesmos dois estoques em sequências opostas.
+   * Quando: ambas são liberadas simultaneamente com saldo suficiente.
+   * Então: as duas terminam com sucesso e os saldos refletem os quatro consumos.
+   * Por quê: os alvos técnicos precisam ser bloqueados em ordem determinística.
+   */
+  it("evita deadlock com estoques solicitados em ordens inversas", async () => {
+    await db.run(
+      UPDATE(entities.Estoques, IDS.stockB).with({
+        quantidadeDisponivel: 10,
+      }),
+    );
+    await insertOrders([
+      buildOrder(IDS.inverseA, "HDI-INVERSA-A"),
+      buildOrder(IDS.inverseB, "HDI-INVERSA-B"),
+    ]);
+    await insertReservations([
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000015",
+        IDS.inverseA,
+        IDS.materialA,
+        2,
+      ),
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000016",
+        IDS.inverseA,
+        IDS.materialB,
+        2,
+      ),
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000017",
+        IDS.inverseB,
+        IDS.materialB,
+        2,
+      ),
+      buildReservation(
+        "b9000000-0000-4000-a000-000000000018",
+        IDS.inverseB,
+        IDS.materialA,
+        2,
+      ),
+    ]);
+
+    const results = await Promise.allSettled([
+      POST(actionUrl("Ordens", IDS.inverseA, "liberarOrdem"), {}, AUTH.admin),
+      POST(actionUrl("Ordens", IDS.inverseB, "liberarOrdem"), {}, AUTH.admin),
+    ]);
+    const stockA = await SELECT.one.from(entities.Estoques, IDS.stockA);
+    const stockB = await SELECT.one.from(entities.Estoques, IDS.stockB);
+    const orders = await SELECT.from(entities.Ordens)
+      .columns("status_code")
+      .where({ ID: { in: [IDS.inverseA, IDS.inverseB] } });
+    const movements = await SELECT.from(entities.MovimentosEstoque).where({
+      ordem_ID: { in: [IDS.inverseA, IDS.inverseB] },
+    });
+
+    expect(httpStatuses(results)).to.deep.equal([200, 200]);
+    expect(Number(stockA.quantidadeDisponivel)).to.equal(6);
+    expect(Number(stockB.quantidadeDisponivel)).to.equal(6);
+    expect(orders.every(({ status_code }) => status_code === "LIBERADA")).to.equal(
+      true,
+    );
+    expect(movements).to.have.length(4);
   });
 
   /**
@@ -472,7 +619,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     );
     await db.run(
       DELETE.from(entities.Estoques).where({
-        ID: { in: [IDS.stockA, IDS.stockB] },
+        ID: { in: [IDS.stockA, IDS.stockB, IDS.stockDuplicate] },
       }),
     );
     await db.run(

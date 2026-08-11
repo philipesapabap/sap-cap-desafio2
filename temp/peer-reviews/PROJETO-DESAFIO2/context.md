@@ -56,7 +56,7 @@ O sistema deve permitir consultar ordens conforme o acesso do usuário, filtrar 
 ## Premissas e limitações
 
 - Houve execução funcional em Chrome headless; não houve validação visual responsiva ou comparação de imagens.
-- Não houve teste de concorrência em SAP HANA. A documentação oficial registra que SQLite não suporta o bloqueio pessimista usado por `forUpdate()`.
+- A revisão inicial não incluiu concorrência em SAP HANA; testes posteriores no HDI passaram a cobrir a mesma ordem, estoque compartilhado e estoques solicitados em ordem inversa.
 - Foram adicionados testes automatizados de backend, HDI e jornadas OPA5. Ainda não há teste visual responsivo ou de regressão por imagem.
 - As vulnerabilidades do `npm audit` foram registradas como risco residual, sem classificação como finding funcional por falta de evidência de alcançabilidade.
 
@@ -73,3 +73,13 @@ O sistema deve permitir consultar ordens conforme o acesso do usuário, filtrar 
 - A suíte unitária passou com 8/8 testes; os três cenários HTTP/SQLite do filtro virtual passaram para `true`, `false` e combinação com `or`.
 - A suíte HTTP/SQLite completa passou em 25 cenários. As três falhas restantes são preexistentes e correspondem a F001, à parcela transferida do F010 e à expectativa de idioma do teste de motivo obrigatório.
 - Após indisponibilidade temporária da conexão, o teste HANA/HDI `preserva a semântica de or no filtro virtual no HANA` foi repetido e passou com 1/1.
+
+## Validação posterior — F001
+
+- A liberação passou a bloquear estoques distintos em ordem determinística, simular todas as reservas e persistir somente depois da validação completa.
+- A entidade `Estoques` recebeu uma restrição funcional única para material e depósito; CSV, SQLite e HDI foram previamente verificados sem duplicidades.
+- A compilação SQL/HANA gerou `UNIQUE (material_ID, deposito_ID)`.
+- Os testes focados SQLite passaram com 5/5; a suíte completa passou em 28 cenários e manteve somente duas falhas preexistentes sem relação com F001.
+- No HANA, passaram os cenários de atomicidade do lote, rollback individual, saldo acumulado e três formas de concorrência.
+- A jornada Fiori de Lotes passou com 45/45 asserções.
+- Ainda é necessário implantar o novo modelo no HDI antes de executar o teste HANA específico da restrição única.

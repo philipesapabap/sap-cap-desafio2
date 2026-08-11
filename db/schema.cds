@@ -72,6 +72,10 @@ entity Materiais : cuid {
     ativo      : Boolean default true;
 }
 
+// Cada material possui no máximo um saldo por depósito.
+// O UUID permanece como chave técnica; esta restrição representa a chave
+// funcional e impede que consultas de saldo encontrem registros ambíguos.
+@assert.unique.materialDeposito: [material, deposito]
 entity Estoques : cuid, managed {
     material             : Association to Materiais not null;
     deposito             : Association to Depositos not null;
