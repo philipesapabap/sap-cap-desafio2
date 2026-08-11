@@ -8,7 +8,7 @@
 | F004 | 🟧 Média | 🔵 Pendente | Cancelamento grava código inexistente na lista de status. |
 | F005 | 🟧 Média | 🔵 Pendente | Lote usa `ERRO` em vez de `PROCESSADO_COM_ERRO`. |
 | F006 | 🟧 Média | 🔵 Pendente | Draft e ativação aceitam `valorEstimado` negativo. |
-| F007 | 🟨 Baixa | 🔵 Pendente | Arquivo `.http` aponta para endpoint inexistente. |
+| F007 | 🟨 Baixa | 🟢 Resolvido | Arquivo `.http` utiliza o endpoint correto `/planejamento`. |
 | F008 | 🟨 Baixa | 🔵 Pendente | UI5 linter rejeita a versão dos dois manifests. |
 | F009 | 🟧 Média | 🔵 Pendente | Patch do draft não valida o período completo. |
 | F010 | 🟥 Alta | 🔵 Pendente | Escopo de leitura impede ativar um draft novo. |

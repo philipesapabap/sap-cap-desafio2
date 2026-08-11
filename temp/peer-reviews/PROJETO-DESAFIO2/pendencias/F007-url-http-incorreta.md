@@ -23,3 +23,14 @@ Alinhar a variável com o caminho explícito do serviço.
 ```http
 @service = {{host}}/planejamento
 ```
+
+## Resolução
+
+**Status:** 🟢 Resolvido
+
+A variável `@service` foi alterada para utilizar o caminho explícito `/planejamento`.
+
+A validação local confirmou:
+
+- `GET /planejamento/$metadata`: HTTP 200;
+- `GET /planejamento/Ordens?$top=3`: HTTP 200.
