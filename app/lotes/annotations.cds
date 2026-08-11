@@ -2,8 +2,8 @@ using PlanejamentoService as service from '../../srv/planejamento-service';
 
 /*
  * Associa o código técnico do status ao seu texto traduzido.
- * O lote continua armazenando `ABERTO`, `PROCESSADO` ou `ERRO`, enquanto
- * o Fiori apresenta `Open`, `Processed` ou `Error` conforme o idioma.
+ * O lote armazena `ABERTO`, `PROCESSADO` ou `PROCESSADO_COM_ERRO`,
+ * enquanto o Fiori apresenta a descrição correspondente ao idioma.
  *
  * `ValueListWithFixedValues` permite apresentar a lista como dropdown.
  */

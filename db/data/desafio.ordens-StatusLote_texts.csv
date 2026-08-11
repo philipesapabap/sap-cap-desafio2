@@ -3,5 +3,5 @@ pt;ABERTO;Aberto
 en;ABERTO;Open
 pt;PROCESSADO;Processado
 en;PROCESSADO;Processed
-pt;ERRO;Erro no processamento
-en;ERRO;Processing error
+pt;PROCESSADO_COM_ERRO;Processado com erro
+en;PROCESSADO_COM_ERRO;Processed with errors

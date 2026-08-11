@@ -2,6 +2,8 @@
 
 **Severidade:** 🟧 Média
 
+**Status:** 🟢 Resolvido
+
 ## Base
 
 - Arquivo: `srv/planejamento-service.js:641`.
@@ -37,3 +39,21 @@ PROCESSADO_COM_ERRO;Processado com erro
 ## Impacto
 
 Integrações e a futura action de reprocessamento não reconhecem o estado produzido pelo lote.
+
+## Resolução
+
+- O handler passou a gravar `PROCESSADO_COM_ERRO` quando algum item falha.
+- O catálogo, os textos localizados e os lotes de exemplo foram alinhados ao código contratual.
+- A navegação dos itens passou a usar a associação expandida `ordem/ID`.
+- Os testes OPA5 passaram a localizar `processarLote` pelo ID técnico, sem depender do idioma da interface.
+
+## Evidências
+
+```text
+SQLite: usa o status contratual para lote com erro      -> 1 passed
+HANA/HDI: usa o status contratual quando o lote termina com erro -> 1 passed
+Fiori/OPA5: 44/45 asserções passaram
+```
+
+O cenário visual do F005 passou. A única falha restante na jornada Fiori
+corresponde ao F011, referente à atualização imediata dos itens na Object Page.

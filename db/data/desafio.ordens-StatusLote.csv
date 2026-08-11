@@ -1,4 +1,4 @@
 code;texto
 ABERTO;Aberto
 PROCESSADO;Processado
-ERRO;Erro no processamento
+PROCESSADO_COM_ERRO;Processado com erro

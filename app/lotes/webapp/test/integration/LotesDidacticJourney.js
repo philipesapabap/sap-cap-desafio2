@@ -90,10 +90,7 @@ sap.ui.define([
                 "LOTE-0001",
                 "Lote aberto com ordens pendentes"
             );
-            Then.onTheLotesLiberacaoObjectPage.onHeader().iCheckAction("Processar lote", {
-                visible: true,
-                enabled: true
-            });
+            Then.onTheLotesLiberacaoObjectPage.iCheckProcessarLoteAction();
             Then.onTheLotesLiberacaoObjectPage.iCheckItemGridRowsByStatus("PENDENTE", 2);
         });
 
@@ -118,7 +115,7 @@ sap.ui.define([
          * Por quê: separa a execução da action das verificações visuais posteriores.
          */
         opaTest("processa o lote aberto", function (Given, When, Then) {
-            When.onTheLotesLiberacaoObjectPage.onHeader().iExecuteAction("Processar lote");
+            When.onTheLotesLiberacaoObjectPage.iExecuteProcessarLoteAction();
             Then.onTheLotesLiberacaoObjectPage.iSeeThisPage();
         });
 
@@ -161,7 +158,7 @@ sap.ui.define([
             When.onTheLotesLiberacaoList.iPressGridRowByCode("LOTE-0001");
             Then.onTheLotesLiberacaoObjectPage.iSeeThisPage();
 
-            When.onTheLotesLiberacaoObjectPage.onHeader().iExecuteAction("Processar lote");
+            When.onTheLotesLiberacaoObjectPage.iExecuteProcessarLoteAction();
             Then.onTheLotesLiberacaoObjectPage.onErrorDialog().iCheckState({ visible: true });
 
             When.onTheLotesLiberacaoObjectPage.onErrorDialog().iClose();
@@ -192,7 +189,7 @@ sap.ui.define([
             When.onTheLotesLiberacaoList.iPressGridRowByCode("LOTE-0002");
             Then.onTheLotesLiberacaoObjectPage.iSeeThisPage();
 
-            When.onTheLotesLiberacaoObjectPage.onHeader().iExecuteAction("Processar lote");
+            When.onTheLotesLiberacaoObjectPage.iExecuteProcessarLoteAction();
             Then.onTheLotesLiberacaoObjectPage.onErrorDialog().iCheckState({ visible: true });
             When.onTheLotesLiberacaoObjectPage.onErrorDialog().iClose();
         });

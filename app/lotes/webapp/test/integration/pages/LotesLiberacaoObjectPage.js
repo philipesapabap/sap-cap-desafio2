@@ -6,6 +6,7 @@ sap.ui.define([
     "use strict";
 
     const GRID_TABLE_ID_SUFFIX = "fe::table::itens::LineItem-innerTable";
+    const PROCESSAR_LOTE_ACTION_ID = /.*processarLote$/;
 
     /**
      * Identifica a GridTable interna que exibe os itens do lote.
@@ -45,6 +46,21 @@ sap.ui.define([
 
     const CustomPageDefinitions = {
         actions: {
+            /**
+             * Executa a action do lote pelo ID técnico gerado pelo Fiori elements.
+             * O seletor não depende do texto traduzido exibido no botão.
+             *
+             * @returns {sap.ui.test.Opa5} Encadeamento OPA5 da ação.
+             */
+            iExecuteProcessarLoteAction: function () {
+                return this.waitFor({
+                    controlType: "sap.m.Button",
+                    id: PROCESSAR_LOTE_ACTION_ID,
+                    actions: new Press(),
+                    errorMessage: "A action processarLote não foi encontrada"
+                });
+            },
+
             iPressSectionIconTabFilterButton: function (section) {
                 return this.waitFor({
                     id: new RegExp(`.*--fe::FacetSection::${section}-anchor$`),
@@ -68,10 +84,10 @@ sap.ui.define([
                     success: function (tables) {
                         const row = getBoundRows(tables[0])[rowIndex];
 
-                        const orderId = row.getBindingContext().getProperty("ordem_ID");
+                        const orderId = row.getBindingContext().getProperty("ordem/ID");
 
                         if (!orderId)
-                            throw new Error("O item do lote não possui ordem_ID");
+                            throw new Error("O item do lote não possui ordem/ID");
 
                         navigateToAppPath(`Ordens(ID=${orderId},IsActiveEntity=true)`);
                     },
@@ -80,6 +96,28 @@ sap.ui.define([
             }
         },
         assertions: {
+            /**
+             * Confirma que a action do lote está visível e habilitada sem
+             * depender do idioma atual da interface.
+             *
+             * @returns {sap.ui.test.Opa5} Encadeamento OPA5 da assertion.
+             */
+            iCheckProcessarLoteAction: function () {
+                return this.waitFor({
+                    controlType: "sap.m.Button",
+                    id: PROCESSAR_LOTE_ACTION_ID,
+                    check: function (buttons) {
+                        return buttons.some(
+                            (button) => button.getVisible() && button.getEnabled()
+                        );
+                    },
+                    success: function () {
+                        Opa5.assert.ok(true, "A action processarLote está disponível");
+                    },
+                    errorMessage: "A action processarLote não está disponível"
+                });
+            },
+
             /**
              * Confere a quantidade de itens que possuem o status técnico informado.
              * A leitura usa o contexto OData, evitando helpers que esperam `getItems()`.

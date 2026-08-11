@@ -152,7 +152,7 @@
                   "detail": {
                     "route": "OrdensObjectPageFromLote",
                      "parameters": {
-                      "orderId": "{ordem_ID}"
+                      "orderId": "{ordem/ID}"
                      }
                   }
                 }

@@ -656,7 +656,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
    * da transação e impedir persistência inconsistente.
    *
    * Ao final, o lote recebe PROCESSADO quando todos os itens têm sucesso
-   * ou ERRO quando pelo menos um item apresenta falha funcional.
+   * ou PROCESSADO_COM_ERRO quando pelo menos um item apresenta falha funcional.
    *
    * @param {cds.Request} req Requisição CAP da action vinculada ao lote.
    * @returns {Promise<object>} Lote atualizado após o processamento.
@@ -733,7 +733,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       }
     }
     await UPDATE(LotesLiberacao, ID).with({
-      status_code: erros > 0 ? "ERRO" : "PROCESSADO",
+      status_code: erros > 0 ? "PROCESSADO_COM_ERRO" : "PROCESSADO",
     });
     return SELECT.one.from(LotesLiberacao).where({ ID });
   }
