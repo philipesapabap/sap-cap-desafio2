@@ -1,5 +1,13 @@
 # Controle do peer review
 
+## Status utilizados
+
+- 🔵 Pendente: o finding ainda não recebeu tratamento suficiente.
+- 🟠 Parcialmente resolvido: parte comprovável do finding foi corrigida, mas ainda existe trabalho transferido ou pendente.
+- 🟢 Resolvido: o comportamento esperado foi implementado e validado.
+- 🟡 Won't fix: foi decidido que o finding não será corrigido.
+- ⚪ Inexistente: a revisão concluiu que o finding não existe.
+
 | ID | Severidade | Status | Observações |
 |---|---|---|---|
 | F001 | 🟥 Alta | 🔵 Pendente | Item com erro pode consumir estoque e gravar movimento parcial. |
@@ -11,5 +19,5 @@
 | F007 | 🟨 Baixa | 🟢 Resolvido | Arquivo `.http` utiliza o endpoint correto `/planejamento`. |
 | F008 | 🟨 Baixa | 🟢 Resolvido | Os dois manifests usam a Version 2 e passam no UI5 linter sem findings. |
 | F009 | 🟧 Média | 🔵 Pendente | Patch do draft não valida o período completo. |
-| F010 | 🟥 Alta | 🔵 Pendente | Escopo de leitura impede ativar um draft novo. |
+| F010 | 🟥 Alta | 🟠 Parcialmente resolvido | O criador voltou a acessar o próprio draft; a conclusão da ativação foi transferida para uma Change Request do Desafio 3. |
 | F011 | 🟧 Média | 🟢 Resolvido | A action solicita a releitura do status e dos itens após processar o lote. |

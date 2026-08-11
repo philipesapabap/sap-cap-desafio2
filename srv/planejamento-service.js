@@ -29,7 +29,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     this.before("READ", Ordens, this.aplicarFiltroDeRiscoEstoque);
     this.before("READ", Ordens.drafts, this.aplicarFiltroDeRiscoEstoque);
     this.before("READ", Ordens, this.aplicarEscopoDeLeitura);
-    this.before("READ", Ordens.drafts, this.aplicarEscopoDeLeitura);
+    this.before("READ", Ordens.drafts, this.aplicarEscopoDeLeituraDraft);
 
     // Inclui na consulta os campos técnicos necessários ao cálculo da situação.
     this.before("READ", ReservasMateriais, this.incluirCamposDaSituacaoEstoque);
@@ -96,6 +96,67 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         ? ["(", ...whereAtual, ")", "and", filtroAcesso]
         : [filtroAcesso];
   }
+
+  /**
+   * Restringe a leitura dos drafts de ordens.
+   *
+   * Para drafts derivados de ordens existentes, mantém o acesso baseado em
+   * V_AcessosOrdem. Para uma ordem nova, que ainda não possui responsabilidades,
+   * permite a leitura somente ao usuário registrado como criador do draft.
+   *
+   * O administrador continua possuindo acesso global.
+   *
+   * @param {import("@sap/cds").Request} req Requisição READ do draft.
+   * @returns {void}
+   */
+  async aplicarEscopoDeLeituraDraft(req) {
+    if (req.user?.is("admin")) return;
+
+    const matricula = req.user?.id;
+    if (!matricula || matricula === "anonymous")
+      return req.reject(401, "AUTH_LOGIN_REQUIRED");
+
+    if (!req.query?.SELECT) return;
+
+    const alias = this.garantirAlias(req.query, "ordem");
+    const filtroAcesso = this.montarExistsAcessoOrdem(matricula, alias);
+
+    /*
+     * A exceção vale somente para drafts novos do próprio usuário.
+     *
+     * HasActiveEntity = false impede que a autoria seja usada para liberar
+     * drafts de ordens ativas às quais o usuário não possui mais acesso.
+     *
+     * createdBy é preenchido pelo CAP por meio do aspecto managed.
+     */
+    const filtroDraftNovoDoCriador = {
+      xpr: [
+        { ref: [alias, "HasActiveEntity"] },
+        "=",
+        { val: false },
+        "and",
+        { ref: [alias, "createdBy"] },
+        "=",
+        { val: matricula },
+      ],
+    };
+
+    /*
+     * Um draft fica visível quando o usuário possui responsabilidade sobre a
+     * ordem ou quando se trata de uma ordem nova criada pelo próprio usuário.
+     */
+    const filtroEscopo = {
+      xpr: [filtroAcesso, "or", filtroDraftNovoDoCriador],
+    };
+
+    const whereAtual = req.query.SELECT.where;
+
+    req.query.SELECT.where =
+      Array.isArray(whereAtual) && whereAtual.length
+        ? ["(", ...whereAtual, ")", "and", filtroEscopo]
+        : [filtroEscopo];
+  }
+
   garantirAlias(query, fallback) {
     const from = query?.SELECT?.from;
 
