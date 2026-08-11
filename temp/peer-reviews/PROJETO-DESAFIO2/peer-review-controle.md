@@ -12,7 +12,7 @@
 |---|---|---|---|
 | F001 | 🟥 Alta | 🔵 Pendente | Item com erro pode consumir estoque e gravar movimento parcial. |
 | F002 | 🟥 Alta | 🟢 Resolvido | Actions de liberação e cancelamento validam o acesso funcional à ordem. |
-| F003 | 🟧 Média | 🔵 Pendente | Filtro de risco transforma expressões com `or` em interseção. |
+| F003 | 🟧 Média | 🟢 Resolvido | A comparação virtual é substituída na posição original e preserva `and`, `or` e agrupamentos. |
 | F004 | 🟧 Média | 🟢 Resolvido | O catálogo contém `CANCELADA` e a associação retorna o texto após o cancelamento. |
 | F005 | 🟧 Média | 🟢 Resolvido | Lotes com falha assumem o status contratual `PROCESSADO_COM_ERRO`. |
 | F006 | 🟧 Média | 🟢 Resolvido | Criação, edição e ativação rejeitam `valorEstimado` fora do intervalo permitido. |

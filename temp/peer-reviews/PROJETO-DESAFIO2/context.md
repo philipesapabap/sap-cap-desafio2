@@ -65,3 +65,11 @@ O sistema deve permitir consultar ordens conforme o acesso do usuário, filtrar 
 - Ausência de validação de acesso na action individual já existia antes do commit `7ed71eb`; permanece obrigatória pela especificação.
 - O código `CANCELADA` já estava ausente no CSV antes do último incremento.
 - A validação de `valorEstimado` negativo já estava ausente.
+
+## Validação posterior — F003
+
+- A comparação de `comRiscoEstoque` passou a ser substituída no mesmo ponto da expressão CQN, inclusive dentro de `xpr` aninhadas.
+- Sintaxe JavaScript, compilação CDS e `git diff --check` passaram.
+- A suíte unitária passou com 8/8 testes; os três cenários HTTP/SQLite do filtro virtual passaram para `true`, `false` e combinação com `or`.
+- A suíte HTTP/SQLite completa passou em 25 cenários. As três falhas restantes são preexistentes e correspondem a F001, à parcela transferida do F010 e à expectativa de idioma do teste de motivo obrigatório.
+- Após indisponibilidade temporária da conexão, o teste HANA/HDI `preserva a semântica de or no filtro virtual no HANA` foi repetido e passou com 1/1.

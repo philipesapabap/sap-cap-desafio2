@@ -191,18 +191,21 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const where = req.query?.SELECT?.where;
     if (!Array.isArray(where)) return;
 
-    const filtroRisco = this.obterFiltroBooleano(where, "comRiscoEstoque");
-    if (!filtroRisco) return;
+    const possuiFiltroRisco = this.obterFiltroBooleano(
+      where,
+      "comRiscoEstoque",
+    );
+
+    if (!possuiFiltroRisco) return;
 
     const alias = this.garantirAlias(req.query, "ordem");
-    const whereSemVirtual = this.removerFiltroDoCampo(where, "comRiscoEstoque");
     const existsRisco = this.montarExistsRiscoEstoque(alias);
-    const filtroEstoque =
-      filtroRisco.valor === true ? existsRisco : { xpr: ["not", existsRisco] };
 
-    req.query.SELECT.where = whereSemVirtual.length
-      ? ["(", ...whereSemVirtual, ")", "and", filtroEstoque]
-      : [filtroEstoque];
+    req.query.SELECT.where = this.substituirFiltroBooleano(
+      where,
+      "comRiscoEstoque",
+      existsRisco,
+    );
   }
 
   montarExistsRiscoEstoque(aliasOrdem) {
@@ -266,38 +269,67 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     }
   }
 
-  removerFiltroDoCampo(where, campo) {
+  /**
+   * Substitui a comparação de um campo booleano virtual por uma expressão CQN
+   * (CQN é o formato interno da consulta no CAP)
+   * que possa ser executada pelo banco de dados.
+   *
+   * A substituição acontece na posição original do filtro e também percorre
+   * expressões `xpr` aninhadas
+   * (`xpr` representa um filtro agrupado, como uma condição entre parênteses).
+   * Dessa forma, operadores como `and` e `or`, além dos agrupamentos da consulta,
+   * permanecem com a mesma semântica. Quando a comparação solicita `false`, a
+   * expressão recebida é envolvida por `not`.
+   *
+   * @param {Array} where Expressão CQN do filtro que será percorrida.
+   * @param {string} campo Nome do campo booleano virtual que será substituído.
+   * @param {object} filtroVerdadeiro Expressão CQN equivalente ao valor `true`.
+   * @returns {Array} Nova expressão CQN com o filtro virtual substituído.
+   */
+  substituirFiltroBooleano(where, campo, filtroVerdadeiro) {
     const resultado = [];
 
     for (let indice = 0; indice < where.length; indice++) {
-      const trecho = where.slice(indice, indice + 3);
-      const [esquerda, operador, direita] = trecho;
-      const ehFiltroDoCampo = this.extrairComparacaoBooleana(
+      const esquerda = where[indice];
+      const operador = where[indice + 1];
+      const direita = where[indice + 2];
+
+      const comparacao = this.extrairComparacaoBooleana(
         esquerda,
         operador,
         direita,
         campo,
       );
 
-      if (!ehFiltroDoCampo) {
-        if (Array.isArray(where[indice]?.xpr)) {
-          const xpr = this.removerFiltroDoCampo(where[indice].xpr, campo);
-          if (xpr.length) resultado.push({ xpr });
-          continue;
-        }
+      if (comparacao) {
+        const filtroSubstituto =
+          comparacao.valor === true
+            ? filtroVerdadeiro
+            : { xpr: ["not", filtroVerdadeiro] };
 
-        resultado.push(where[indice]);
+        resultado.push(filtroSubstituto);
+        indice += 2;
         continue;
       }
 
-      if (resultado[resultado.length - 1] === "and") resultado.pop();
+      const item = where[indice];
 
-      indice += 2;
+      if (Array.isArray(item?.xpr)) {
+        resultado.push({
+          ...item,
+          xpr: this.substituirFiltroBooleano(
+            item.xpr,
+            campo,
+            filtroVerdadeiro,
+          ),
+        });
+        continue;
+      }
 
-      if (where[indice + 1] === "and") indice += 1;
+      resultado.push(item);
     }
 
-    return this.limparConectoresDoWhere(resultado);
+    return resultado;
   }
 
   extrairComparacaoBooleana(esquerda, operador, direita, campo) {
@@ -318,19 +350,6 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
           : valorEsquerda,
       };
     }
-  }
-
-  limparConectoresDoWhere(where) {
-    return where.filter((item, indice, itens) => {
-      if (item === "(" && itens[indice + 1] === ")") return false;
-      if (item === ")" && itens[indice - 1] === "(") return false;
-      if ((item === "and" || item === "or") && indice === 0) return false;
-      if ((item === "and" || item === "or") && indice === itens.length - 1) {
-        return false;
-      }
-
-      return true;
-    });
   }
 
   ehRefCampo(valor, campo) {

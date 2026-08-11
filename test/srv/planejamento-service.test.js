@@ -7,9 +7,10 @@
  * Teste 2 - preserva alias existente.
  * Teste 3 - encontra comparação booleana direta e invertida.
  * Teste 4 - encontra comparação booleana aninhada.
- * Teste 5 - remove filtro virtual simples e preserva o filtro restante.
- * Teste 6 - aceita período válido.
- * Teste 7 - rejeita período inválido no campo alterado.
+ * Teste 5 - substitui filtro virtual e preserva o operador `or`.
+ * Teste 6 - substitui filtro virtual dentro de uma expressão aninhada.
+ * Teste 7 - aceita período válido.
+ * Teste 8 - rejeita período inválido no campo alterado.
  */
 
 const cds = require("@sap/cds");
@@ -103,28 +104,76 @@ describe("PlanejamentoService — unidades dos handlers", () => {
   });
 
   /**
-   * Dado: um `$filter` com o campo virtual e uma condição persistente por código.
-   * Quando: `removerFiltroDoCampo` elimina a comparação não armazenada no banco.
-   * Então: a condição por código e seus operandos permanecem intactos.
-   * Por quê: o HANA/SQLite não pode receber uma coluna virtual no SQL gerado.
+   * Dado: um filtro que combina o campo virtual e o código por meio de `or`.
+   * Quando: a comparação virtual é substituída pela expressão de risco.
+   * Então: o `or` e a condição por código permanecem nas posições originais.
+   * Por quê: transformar a união em `and` excluiria ordens válidas do resultado.
    */
-  it("remove filtro virtual simples e preserva o filtro restante", () => {
+  it("substitui filtro virtual e preserva o operador or", () => {
+    const filtroVerdadeiro = { xpr: ["exists", { val: 1 }] };
     const where = [
       { ref: ["comRiscoEstoque"] },
       "=",
-      { val: true },
-      "and",
+      { val: false },
+      "or",
       { ref: ["codigo"] },
       "=",
       { val: "OM-TESTE" },
     ];
 
-    const resultado = service.removerFiltroDoCampo(where, "comRiscoEstoque");
+    const resultado = service.substituirFiltroBooleano(
+      where,
+      "comRiscoEstoque",
+      filtroVerdadeiro,
+    );
 
     expect(resultado).to.deep.equal([
+      { xpr: ["not", filtroVerdadeiro] },
+      "or",
       { ref: ["codigo"] },
       "=",
       { val: "OM-TESTE" },
+    ]);
+  });
+
+  /**
+   * Dado: o campo virtual dentro de um agrupamento CQN do tipo `xpr`.
+   * Quando: a comparação virtual é substituída recursivamente.
+   * Então: o agrupamento e o operador `and` são preservados.
+   * Por quê: filtros OData entre parênteses não podem perder sua precedência.
+   */
+  it("substitui filtro virtual dentro de expressão aninhada", () => {
+    const filtroVerdadeiro = { xpr: ["exists", { val: 1 }] };
+    const where = [
+      {
+        xpr: [
+          { ref: ["comRiscoEstoque"] },
+          "=",
+          { val: true },
+          "and",
+          { ref: ["codigo"] },
+          "=",
+          { val: "OM-TESTE" },
+        ],
+      },
+    ];
+
+    const resultado = service.substituirFiltroBooleano(
+      where,
+      "comRiscoEstoque",
+      filtroVerdadeiro,
+    );
+
+    expect(resultado).to.deep.equal([
+      {
+        xpr: [
+          filtroVerdadeiro,
+          "and",
+          { ref: ["codigo"] },
+          "=",
+          { val: "OM-TESTE" },
+        ],
+      },
     ]);
   });
 
