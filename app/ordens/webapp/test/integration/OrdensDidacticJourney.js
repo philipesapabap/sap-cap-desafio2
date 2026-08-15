@@ -14,7 +14,7 @@
  * 6. seleciona a ordem sem estoque suficiente;
  * 7. apresenta o erro funcional ao tentar liberá-la;
  * 8. cancela a ordem informando o motivo obrigatório;
- * 9. inicia a criação de uma ordem em draft;
+ * 9. inicia a criação de uma ordem em draft e valida os campos editáveis;
  * 10. encerra a aplicação e limpa o iframe.
  */
 
@@ -24,6 +24,9 @@ sap.ui.define(["sap/ui/test/opaQunit"], function (opaTest) {
   const CODE_FILTER = { property: "codigo" };
   const RISK_FILTER = { property: "comRiscoEstoque" };
   const STATUS_FIELD = { property: "status_code" };
+  const CENTER_FIELD = { property: "centro_ID" };
+  const INSTALLATION_LOCATION_FIELD = { property: "localInstalacao_ID" };
+  const RESPONSIBLE_FIELD = { property: "responsavel_matricula" };
   const OBSERVATION_FIELD = { property: "observacao" };
   const GENERAL_DATA_FORM = { fieldGroup: "DadosGerais" };
   const PLANNING_FORM = { fieldGroup: "Planejamento" };
@@ -221,8 +224,9 @@ sap.ui.define(["sap/ui/test/opaQunit"], function (opaTest) {
     /**
      * Dado: o List Report oferece criação porque `Ordens` é draft-enabled.
      * Quando: o usuário retorna à lista e pressiona Criar.
-     * Então: uma Object Page editável de novo draft é aberta com ações de rodapé.
-     * Por quê: confirma a entrada do fluxo transacional usado pelo Fiori elements.
+     * Então: a Object Page abre com ações de rodapé e permite informar centro,
+     * local de instalação e responsável.
+     * Por quê: esses vínculos obrigatórios precisam ser gravados no novo draft.
      */
     opaTest(
       "inicia a criação de uma ordem em draft",
@@ -234,6 +238,17 @@ sap.ui.define(["sap/ui/test/opaQunit"], function (opaTest) {
         Then.onTheOrdensObjectPage.iSeeThisPage();
         Then.onTheOrdensObjectPage.onFooter().iCheckSave({ visible: true });
         Then.onTheOrdensObjectPage.onFooter().iCheckCancel({ visible: true });
+        Then.onTheOrdensObjectPage
+          .onForm(GENERAL_DATA_FORM)
+          .iCheckField(CENTER_FIELD, "", { editMode: "Editable" });
+        Then.onTheOrdensObjectPage
+          .onForm(GENERAL_DATA_FORM)
+          .iCheckField(INSTALLATION_LOCATION_FIELD, "", {
+            editMode: "Editable",
+          });
+        Then.onTheOrdensObjectPage
+          .onForm(GENERAL_DATA_FORM)
+          .iCheckField(RESPONSIBLE_FIELD, "", { editMode: "Editable" });
       },
     );
 

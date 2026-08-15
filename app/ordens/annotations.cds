@@ -50,10 +50,47 @@ annotate service.Prioridades : code with
 @Common.TextArrangement: #TextOnly;
 
 /*
- * Oculta o UUID técnico na ajuda de valores de centros.
+ * Configura a exibição das associações editáveis da ordem.
+ *
+ * O CAP copia essas annotations para as chaves estrangeiras geradas no OData
+ * (`centro_ID`, `localInstalacao_ID` e `responsavel_matricula`). Assim, o
+ * formulário grava a chave correta, enquanto o Fiori apresenta um valor
+ * compreensível e oferece a ajuda de valores criada por `@cds.odata.valuelist`.
+ */
+annotate service.Ordens : centro with
+@Common.Text           : (centro.codigo)
+@Common.TextArrangement: #TextOnly;
+
+annotate service.Ordens : localInstalacao with
+@Common.Text           : (localInstalacao.codigo)
+@Common.TextArrangement: #TextOnly;
+
+annotate service.Ordens : responsavel with
+@Common.Text           : (responsavel.nome)
+@Common.TextArrangement: #TextOnly
+@Common.ValueList      : {
+    CollectionPath: 'Usuarios',
+    Parameters    : [
+        {
+            $Type            : 'Common.ValueListParameterInOut',
+            LocalDataProperty: responsavel_matricula,
+            ValueListProperty: 'matricula'
+        },
+        {
+            $Type            : 'Common.ValueListParameterDisplayOnly',
+            ValueListProperty: 'nome'
+        }
+    ]
+};
+
+/*
+ * Oculta o UUID técnico na ajuda de valores de centros e local de instalacao.
  * O ID continua sendo usado internamente para vincular a ordem ao centro,
  * mas somente o código e o nome são apresentados ao usuário.
  */
+annotate service.LocaisInstalacao : ID with
+@UI.Hidden: true;
+
 annotate service.Centros : ID with
 @UI.Hidden: true;
 
@@ -146,15 +183,18 @@ annotate service.Ordens with @(
                 Label: '{i18n>description}'
             },
             {
-                Value: centro.codigo,
+                // A chave estrangeira gerada pelo CAP é gravável no draft.
+                Value: centro_ID,
                 Label: '{i18n>center}'
             },
             {
-                Value: localInstalacao.codigo,
+                // O caminho de navegação localInstalacao.codigo seria somente leitura.
+                Value: localInstalacao_ID,
                 Label: '{i18n>installationLocation}'
             },
             {
-                Value: responsavel.nome,
+                // A matrícula selecionada identifica o usuário responsável pela ordem.
+                Value: responsavel_matricula,
                 Label: '{i18n>responsible}'
             },
             {
