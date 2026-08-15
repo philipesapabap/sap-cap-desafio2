@@ -116,6 +116,9 @@ entity ReservasMateriais : cuid, managed {
     ];
 }
 
+// Um usuário pode acumular papéis diferentes na mesma ordem, mas a mesma
+// responsabilidade funcional não pode ser cadastrada mais de uma vez.
+@assert.unique.ordemUsuarioPapel: [ordem, usuario, papel]
 entity ResponsabilidadesOrdem : cuid {
     ordem   : Association to Ordens not null;
     usuario : Association to Usuarios not null;
@@ -166,7 +169,7 @@ view V_AcessosOrdem as
     select from ResponsabilidadesOrdem as responsabilidade {
         key responsabilidade.ordem.ID          as ordem_ID,
         key responsabilidade.usuario.matricula as matricula,
-            responsabilidade.papel             as papel
+        key responsabilidade.papel             as papel
     };
 
 /*

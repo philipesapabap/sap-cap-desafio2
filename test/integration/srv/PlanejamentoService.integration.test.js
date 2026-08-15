@@ -40,6 +40,10 @@
  * Teste 35 - rejeita lote já processado.
  * Teste 36 - rejeita lote aberto sem itens pendentes.
  * Teste 37 - rejeita lote inexistente.
+ * Teste 38 - rejeita responsabilidade funcional duplicada.
+ * Teste 39 - permite papéis diferentes para o mesmo usuário e ordem.
+ * Teste 40 - permite combinações diferentes de ordem, usuário ou papel.
+ * Teste 41 - mantém um único vínculo após tentativas repetidas.
  */
 
 const cds = require("@sap/cds");
@@ -957,6 +961,138 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       404,
       "Lote não encontrado",
     );
+  });
+
+  /**
+   * Dado: uma responsabilidade `EXECUTOR` já existente para usuário e ordem.
+   * Quando: outra linha tenta repetir exatamente a mesma combinação funcional.
+   * Então: o banco rejeita a duplicidade pela restrição de unicidade.
+   * Por quê: repetições ou concorrência não podem multiplicar permissões iguais.
+   */
+  it("rejeita responsabilidade funcional duplicada", async () => {
+    await assert.rejects(
+      db.run(
+        INSERT.into(entities.ResponsabilidadesOrdem).entries({
+          ID: "c4000000-0000-4000-a000-000000000001",
+          ordem_ID: IDS.success,
+          usuario_matricula: USERS.authorized,
+          papel: "EXECUTOR",
+        }),
+      ),
+      (error) => /unique/i.test(error.message),
+    );
+  });
+
+  /**
+   * Dado: o usuário já possui o papel `EXECUTOR` em uma ordem.
+   * Quando: também recebe o papel `SUPERVISOR` na mesma ordem.
+   * Então: os dois vínculos são persistidos e expostos como registros distintos.
+   * Por quê: os papéis são cumulativos e fazem parte da identidade da view.
+   */
+  it("permite papéis diferentes para o mesmo usuário e ordem", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries({
+        ID: "c5000000-0000-4000-a000-000000000001",
+        ordem_ID: IDS.success,
+        usuario_matricula: USERS.authorized,
+        papel: "SUPERVISOR",
+      }),
+    );
+
+    const acesso = cds.model.definitions["PlanejamentoService.AcessosOrdem"];
+    const filter = encodeURIComponent(
+      `ordem_ID eq ${IDS.success} and matricula eq '${USERS.authorized}'`,
+    );
+    const { data, status } = await GET(
+      `${SERVICE_URL}/AcessosOrdem?$select=ordem_ID,matricula,papel&$filter=${filter}`,
+      AUTH.authorized,
+    );
+    const acessoSupervisor = await GET(
+      `${SERVICE_URL}/AcessosOrdem(ordem_ID=${IDS.success},matricula='${USERS.authorized}',papel='SUPERVISOR')`,
+      AUTH.authorized,
+    );
+    const papeis = data.value.map(({ papel }) => papel).sort();
+
+    expect(acesso.elements.papel.key).to.equal(true);
+    expect(status).to.equal(200);
+    expect(papeis).to.deep.equal(["EXECUTOR", "SUPERVISOR"]);
+    expect(acessoSupervisor.status).to.equal(200);
+    expect(acessoSupervisor.data.papel).to.equal("SUPERVISOR");
+  });
+
+  /**
+   * Dado: responsabilidades existentes para duas ordens e dois usuários.
+   * Quando: são inseridos vínculos que alteram ordem, usuário ou papel.
+   * Então: todas as combinações diferentes são aceitas.
+   * Por quê: somente a repetição do trio completo representa uma duplicidade.
+   */
+  it("permite combinações diferentes de ordem, usuário ou papel", async () => {
+    const novasResponsabilidades = [
+      {
+        ID: "c6000000-0000-4000-a000-000000000001",
+        ordem_ID: IDS.success,
+        usuario_matricula: USERS.other,
+        papel: "EXECUTOR",
+      },
+      {
+        ID: "c6000000-0000-4000-a000-000000000002",
+        ordem_ID: IDS.otherUser,
+        usuario_matricula: USERS.authorized,
+        papel: "EXECUTOR",
+      },
+      {
+        ID: "c6000000-0000-4000-a000-000000000003",
+        ordem_ID: IDS.otherUser,
+        usuario_matricula: USERS.other,
+        papel: "SUPERVISOR",
+      },
+    ];
+
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        novasResponsabilidades,
+      ),
+    );
+
+    const registros = await SELECT.from(entities.ResponsabilidadesOrdem).where({
+      ID: { in: novasResponsabilidades.map(({ ID }) => ID) },
+    });
+
+    expect(registros).to.have.length(3);
+  });
+
+  /**
+   * Dado: uma responsabilidade funcional ainda inexistente.
+   * Quando: o mesmo trio é persistido novamente com outro ID técnico.
+   * Então: a primeira inserção permanece e a repetição é rejeitada.
+   * Por quê: IDs diferentes não podem contornar a unicidade funcional.
+   */
+  it("mantém um único vínculo após tentativas repetidas", async () => {
+    const responsabilidade = {
+      ordem_ID: IDS.successSecond,
+      usuario_matricula: USERS.other,
+      papel: "SUPERVISOR",
+    };
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries({
+        ID: "c7000000-0000-4000-a000-000000000001",
+        ...responsabilidade,
+      }),
+    );
+    await assert.rejects(
+      db.run(
+        INSERT.into(entities.ResponsabilidadesOrdem).entries({
+          ID: "c7000000-0000-4000-a000-000000000002",
+          ...responsabilidade,
+        }),
+      ),
+      (error) => /unique/i.test(error.message),
+    );
+    const persistidas = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where(responsabilidade);
+
+    expect(persistidas).to.have.length(1);
   });
 
   async function cleanupFixtures() {

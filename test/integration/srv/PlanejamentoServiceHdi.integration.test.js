@@ -19,6 +19,7 @@
  * Teste 9 - preserva a semântica de `or` no filtro virtual no HANA.
  * Teste 10 - resolve o domínio do status após cancelar uma ordem.
  * Teste 11 - usa o status contratual quando o lote termina com erro.
+ * Teste 12 - rejeita responsabilidade funcional duplicada no HANA.
  */
 
 const assert = require("node:assert/strict");
@@ -516,6 +517,43 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
 
     expect(status).to.equal(200);
     expect(data.status_code).to.equal("PROCESSADO_COM_ERRO");
+  });
+
+  /**
+   * Dado: uma responsabilidade já persistida para a mesma ordem, usuário e papel.
+   * Quando: outro registro técnico tenta repetir essa combinação funcional.
+   * Então: o índice único do HDI rejeita a duplicidade e preserva somente um vínculo.
+   * Por quê: IDs diferentes não podem multiplicar permissões equivalentes no HANA.
+   */
+  it("rejeita responsabilidade funcional duplicada no HANA", async () => {
+    await insertOrders(buildOrder(IDS.sameOrder, "HDI-RESP"));
+    const responsabilidade = {
+      ordem_ID: IDS.sameOrder,
+      usuario_matricula: "100001",
+      papel: "EXECUTOR",
+    };
+
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries({
+        ID: "b9000000-0000-4000-a000-000000000001",
+        ...responsabilidade,
+      }),
+    );
+    await assert.rejects(
+      db.run(
+        INSERT.into(entities.ResponsabilidadesOrdem).entries({
+          ID: "b9000000-0000-4000-a000-000000000002",
+          ...responsabilidade,
+        }),
+      ),
+      (error) => /unique/i.test(error.message),
+    );
+
+    const persistidas = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where(responsabilidade);
+
+    expect(persistidas).to.have.length(1);
   });
 
   async function seedMasterData() {
