@@ -11,28 +11,35 @@
  * Teste 6 - rejeita período inválido na criação do draft.
  * Teste 7 - rejeita período inválido no patch do draft.
  * Teste 8 - rejeita valor estimado negativo.
- * Teste 9 - ativa um draft válido.
- * Teste 10 - rejeita valor estimado negativo na ativação do draft.
- * Teste 11 - libera ordem válida e movimenta estoque.
- * Teste 12 - rejeita estoque duplicado para material e depósito.
- * Teste 13 - considera o consumo acumulado de reservas do mesmo estoque.
- * Teste 14 - rejeita liberação de ordem inexistente.
- * Teste 15 - rejeita liberação de ordem não aberta.
- * Teste 16 - rejeita liberação sem reservas.
- * Teste 17 - reverte liberação individual sem estoque.
- * Teste 18 - rejeita liberação sem acesso.
- * Teste 19 - rejeita cancelamento sem acesso.
- * Teste 20 - exige motivo no cancelamento.
- * Teste 21 - cancela ordem e resolve o texto do status.
- * Teste 22 - rejeita cancelamento de ordem não aberta.
- * Teste 23 - rejeita cancelamento de ordem inexistente.
- * Teste 24 - processa lote integralmente válido.
- * Teste 25 - continua lote após falha funcional de um item.
- * Teste 26 - usa o status contratual para lote com erro.
- * Teste 27 - mantém atomicidade do item que falha no lote.
- * Teste 28 - rejeita lote já processado.
- * Teste 29 - rejeita lote aberto sem itens pendentes.
- * Teste 30 - rejeita lote inexistente.
+ * Teste 9 - permite ao proprietário consultar o próprio draft novo.
+ * Teste 10 - oculta o draft novo de outro usuário.
+ * Teste 11 - oculta do administrador o draft novo de outro usuário.
+ * Teste 12 - rejeita alteração de draft pertencente a outro usuário.
+ * Teste 13 - rejeita ativação de draft pertencente a outro usuário.
+ * Teste 14 - rejeita descarte de draft pertencente a outro usuário.
+ * Teste 15 - preserva o acesso ao draft de ordem existente autorizada.
+ * Teste 16 - ativa um draft válido.
+ * Teste 17 - rejeita valor estimado negativo na ativação do draft.
+ * Teste 18 - libera ordem válida e movimenta estoque.
+ * Teste 19 - rejeita estoque duplicado para material e depósito.
+ * Teste 20 - considera o consumo acumulado de reservas do mesmo estoque.
+ * Teste 21 - rejeita liberação de ordem inexistente.
+ * Teste 22 - rejeita liberação de ordem não aberta.
+ * Teste 23 - rejeita liberação sem reservas.
+ * Teste 24 - reverte liberação individual sem estoque.
+ * Teste 25 - rejeita liberação sem acesso.
+ * Teste 26 - rejeita cancelamento sem acesso.
+ * Teste 27 - exige motivo no cancelamento.
+ * Teste 28 - cancela ordem e resolve o texto do status.
+ * Teste 29 - rejeita cancelamento de ordem não aberta.
+ * Teste 30 - rejeita cancelamento de ordem inexistente.
+ * Teste 31 - processa lote integralmente válido.
+ * Teste 32 - continua lote após falha funcional de um item.
+ * Teste 33 - usa o status contratual para lote com erro.
+ * Teste 34 - mantém atomicidade do item que falha no lote.
+ * Teste 35 - rejeita lote já processado.
+ * Teste 36 - rejeita lote aberto sem itens pendentes.
+ * Teste 37 - rejeita lote inexistente.
  */
 
 const cds = require("@sap/cds");
@@ -67,7 +74,7 @@ const test = cds.test(
   __dirname + "/../../..",
   "--in-memory",
 );
-const { GET, POST, PATCH } = test;
+const { GET, POST, PATCH, DELETE: DELETE_HTTP } = test;
 const IDS = Object.freeze({
   center: "c1000000-0000-4000-a000-000000000001",
   location: "c2000000-0000-4000-a000-000000000001",
@@ -91,6 +98,12 @@ const IDS = Object.freeze({
   draftNegative: "d2000000-0000-4000-a000-000000000002",
   draftValid: "d3000000-0000-4000-a000-000000000003",
   draftNegativeActivation: "d4000000-0000-4000-a000-000000000004",
+  draftOwnerRead: "d5000000-0000-4000-a000-000000000005",
+  draftOtherRead: "d6000000-0000-4000-a000-000000000006",
+  draftAdminRead: "d7000000-0000-4000-a000-000000000007",
+  draftOtherPatch: "d8000000-0000-4000-a000-000000000008",
+  draftOtherActivation: "d9000000-0000-4000-a000-000000000009",
+  draftOtherDiscard: "da000000-0000-4000-a000-00000000000a",
   lotSuccess: "a8000000-0000-4000-a000-000000000001",
   lotMixed: "a8000000-0000-4000-a000-000000000002",
   lotPartial: "a8000000-0000-4000-a000-000000000003",
@@ -276,6 +289,162 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       400,
       "Valor estimado",
     );
+  });
+
+  /**
+   * Dado: um draft novo criado pelo usuário autenticado.
+   * Quando: o próprio criador consulta diretamente o draft.
+   * Então: o draft é retornado com o criador registrado nos metadados do CAP.
+   * Por quê: a exceção ao escopo de ordens ativas deve usar a propriedade do draft.
+   */
+  it("permite ao proprietário consultar o próprio draft novo", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftOwnerRead),
+      AUTH.authorized,
+    );
+
+    const { data, status } = await GET(
+      `${orderUrl(IDS.draftOwnerRead, false)}?$select=ID,IsActiveEntity&$expand=DraftAdministrativeData($select=CreatedByUser)`,
+      AUTH.authorized,
+    );
+
+    expect(status).to.equal(200);
+    expect(data.ID).to.equal(IDS.draftOwnerRead);
+    expect(data.IsActiveEntity).to.equal(false);
+    expect(data.DraftAdministrativeData.CreatedByUser).to.equal(
+      USERS.authorized,
+    );
+  });
+
+  /**
+   * Dado: um draft novo criado por um usuário comum.
+   * Quando: outro usuário tenta consultá-lo diretamente.
+   * Então: a API não revela o draft.
+   * Por quê: acesso a outras ordens não transfere a propriedade deste draft.
+   */
+  it("oculta o draft novo de outro usuário", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftOtherRead),
+      AUTH.authorized,
+    );
+
+    await expectRequestStatus(
+      GET(orderUrl(IDS.draftOtherRead, false), AUTH.other),
+      404,
+    );
+  });
+
+  /**
+   * Dado: um draft novo criado por um usuário comum.
+   * Quando: um usuário com papel administrativo tenta consultá-lo.
+   * Então: a API não revela o draft.
+   * Por quê: o acesso administrativo às ordens ativas não transfere propriedade.
+   */
+  it("oculta do administrador o draft novo de outro usuário", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftAdminRead),
+      AUTH.authorized,
+    );
+
+    await expectRequestStatus(
+      GET(orderUrl(IDS.draftAdminRead, false), AUTH.admin),
+      404,
+    );
+  });
+
+  /**
+   * Dado: um draft novo ainda processado pelo seu criador.
+   * Quando: outro usuário tenta alterar seus dados.
+   * Então: o runtime CAP rejeita a alteração.
+   * Por quê: o filtro de leitura não deve enfraquecer o lock do draft.
+   */
+  it("rejeita alteração de draft pertencente a outro usuário", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftOtherPatch),
+      AUTH.authorized,
+    );
+
+    await expectRequestStatus(
+      PATCH(
+        orderUrl(IDS.draftOtherPatch, false),
+        { descricao: "Alteração indevida" },
+        AUTH.other,
+      ),
+      403,
+    );
+  });
+
+  /**
+   * Dado: um draft novo pertencente a outro usuário.
+   * Quando: o usuário tenta executar `draftActivate`.
+   * Então: a API não localiza o draft dentro do escopo desse usuário.
+   * Por quê: ocultar o draft impede a ativação e evita revelar sua existência.
+   */
+  it("rejeita ativação de draft pertencente a outro usuário", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftOtherActivation),
+      AUTH.authorized,
+    );
+
+    await expectRequestStatus(
+      POST(
+        `${orderUrl(IDS.draftOtherActivation, false)}/PlanejamentoService.draftActivate`,
+        {},
+        AUTH.other,
+      ),
+      404,
+    );
+  });
+
+  /**
+   * Dado: um draft novo pertencente a outro usuário.
+   * Quando: o usuário tenta descartá-lo.
+   * Então: o runtime CAP rejeita a exclusão.
+   * Por quê: outro usuário não pode eliminar o trabalho persistido do criador.
+   */
+  it("rejeita descarte de draft pertencente a outro usuário", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftOtherDiscard),
+      AUTH.authorized,
+    );
+
+    await expectRequestStatus(
+      DELETE_HTTP(orderUrl(IDS.draftOtherDiscard, false), AUTH.other),
+      403,
+    );
+  });
+
+  /**
+   * Dado: uma ordem ativa acessível ao usuário por V_AcessosOrdem.
+   * Quando: ele cria e consulta um draft de edição dessa ordem.
+   * Então: o draft existente continua visível para o usuário autorizado.
+   * Por quê: a exceção dos drafts novos não pode quebrar a edição de ordens ativas.
+   */
+  it("preserva o acesso ao draft de ordem existente autorizada", async () => {
+    await POST(
+      `${orderUrl(IDS.success, true)}/PlanejamentoService.draftEdit`,
+      { PreserveChanges: false },
+      AUTH.authorized,
+    );
+
+    try {
+      const { data, status } = await GET(
+        orderUrl(IDS.success, false),
+        AUTH.authorized,
+      );
+
+      expect(status).to.equal(200);
+      expect(data.ID).to.equal(IDS.success);
+      expect(data.HasActiveEntity).to.equal(true);
+    } finally {
+      await DELETE_HTTP(orderUrl(IDS.success, false), AUTH.authorized);
+    }
   });
 
   /**
@@ -1176,6 +1345,19 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
         .join(" ");
 
       expect(returnedMessages).to.include(expectedMessage);
+    }
+  }
+
+  async function expectRequestStatus(request, expectedStatus) {
+    try {
+      const response = await request;
+      expect.fail(
+        `Esperado HTTP ${expectedStatus}; recebido ${response.status}.`,
+      );
+    } catch (error) {
+      if (!error.response) throw error;
+
+      expect(error.response.status).to.equal(expectedStatus);
     }
   }
 });

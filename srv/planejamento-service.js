@@ -76,6 +76,26 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     return super.init();
   }
 
+  /**
+   * Restringe a leitura das ordens ativas ao escopo do usuário autenticado.
+   *
+   * Para cada ordem consultada, deve existir em V_AcessosOrdem um registro cuja
+   * ordem_ID corresponda ao ID da própria ordem que está sendo avaliada e cuja
+   * matrícula corresponda a req.user.id. Portanto, possuir acesso à OM-0001,
+   * por exemplo, não permite visualizar a OM-0002: cada ordem precisa ter seu
+   * próprio vínculo de acesso para esse usuário.
+   *
+   * O administrador pode consultar todas as ordens ativas.
+   *
+   * Esta função não controla a leitura de drafts. Um draft de ordem nova ainda
+   * não possui uma ordem ativa nem responsabilidades em V_AcessosOrdem e, por
+   * isso, não pode ser autorizado pela regra acima. Esse caso é tratado por
+   * aplicarEscopoDeLeituraDraft, que permite ao proprietário consultar o próprio
+   * draft sem conceder acesso à ordem ativa de outro usuário.
+   *
+   * @param {import("@sap/cds").Request} req Requisição READ da ordem ativa.
+   * @returns {void}
+   */
   async aplicarEscopoDeLeitura(req) {
     // A ? evita erro se req.user não existir
     //Se req.user não existir ele simplesmente retornar Undefined
@@ -103,16 +123,17 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
    *
    * Para drafts derivados de ordens existentes, mantém o acesso baseado em
    * V_AcessosOrdem. Para uma ordem nova, que ainda não possui responsabilidades,
-   * permite a leitura somente ao usuário registrado como criador do draft.
+   * permite a leitura somente ao usuário registrado pelo CAP como criador do
+   * draft em DraftAdministrativeData.CreatedByUser.
    *
-   * O administrador continua possuindo acesso global.
+   * Esta regra não substitui o lock controlado pelo CAP por InProcessByUser. Ela
+   * apenas impede que o filtro de negócio oculte o draft novo do proprietário e
+   * não concede propriedade do draft a outro usuário, nem mesmo ao admin.
    *
    * @param {import("@sap/cds").Request} req Requisição READ do draft.
    * @returns {void}
    */
   async aplicarEscopoDeLeituraDraft(req) {
-    if (req.user?.is("admin")) return;
-
     const matricula = req.user?.id;
     if (!matricula || matricula === "anonymous")
       return req.reject(401, "AUTH_LOGIN_REQUIRED");
@@ -128,7 +149,8 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
      * HasActiveEntity = false impede que a autoria seja usada para liberar
      * drafts de ordens ativas às quais o usuário não possui mais acesso.
      *
-     * createdBy é preenchido pelo CAP por meio do aspecto managed.
+     * CreatedByUser pertence aos metadados administrativos mantidos pelo CAP e
+     * identifica o proprietário original definido pela CR-001.
      */
     const filtroDraftNovoDoCriador = {
       xpr: [
@@ -136,7 +158,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
         "=",
         { val: false },
         "and",
-        { ref: [alias, "createdBy"] },
+        { ref: [alias, "DraftAdministrativeData", "CreatedByUser"] },
         "=",
         { val: matricula },
       ],
@@ -317,11 +339,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
       if (Array.isArray(item?.xpr)) {
         resultado.push({
           ...item,
-          xpr: this.substituirFiltroBooleano(
-            item.xpr,
-            campo,
-            filtroVerdadeiro,
-          ),
+          xpr: this.substituirFiltroBooleano(item.xpr, campo, filtroVerdadeiro),
         });
         continue;
       }
@@ -606,10 +624,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     const alvosPorChave = new Map();
 
     for (const reserva of reservas) {
-      const chave = JSON.stringify([
-        reserva.material_ID,
-        reserva.deposito_ID,
-      ]);
+      const chave = JSON.stringify([reserva.material_ID, reserva.deposito_ID]);
 
       if (!alvosPorChave.has(chave)) {
         alvosPorChave.set(chave, {
@@ -666,10 +681,7 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
      * seguinte.
      */
     for (const reserva of reservas) {
-      const chave = JSON.stringify([
-        reserva.material_ID,
-        reserva.deposito_ID,
-      ]);
+      const chave = JSON.stringify([reserva.material_ID, reserva.deposito_ID]);
       const controle = estoquesBloqueados.get(chave);
       const quantidadeNecessaria = Number(reserva.quantidadeNecessaria);
 
