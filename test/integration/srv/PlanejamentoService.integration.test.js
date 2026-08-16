@@ -18,32 +18,35 @@
  * Teste 13 - rejeita ativação de draft pertencente a outro usuário.
  * Teste 14 - rejeita descarte de draft pertencente a outro usuário.
  * Teste 15 - preserva o acesso ao draft de ordem existente autorizada.
- * Teste 16 - ativa um draft válido.
- * Teste 17 - rejeita valor estimado negativo na ativação do draft.
- * Teste 18 - libera ordem válida e movimenta estoque.
- * Teste 19 - rejeita estoque duplicado para material e depósito.
- * Teste 20 - considera o consumo acumulado de reservas do mesmo estoque.
- * Teste 21 - rejeita liberação de ordem inexistente.
- * Teste 22 - rejeita liberação de ordem não aberta.
- * Teste 23 - rejeita liberação sem reservas.
- * Teste 24 - reverte liberação individual sem estoque.
- * Teste 25 - rejeita liberação sem acesso.
- * Teste 26 - rejeita cancelamento sem acesso.
- * Teste 27 - exige motivo no cancelamento.
- * Teste 28 - cancela ordem e resolve o texto do status.
- * Teste 29 - rejeita cancelamento de ordem não aberta.
- * Teste 30 - rejeita cancelamento de ordem inexistente.
- * Teste 31 - processa lote integralmente válido.
- * Teste 32 - continua lote após falha funcional de um item.
- * Teste 33 - usa o status contratual para lote com erro.
- * Teste 34 - mantém atomicidade do item que falha no lote.
- * Teste 35 - rejeita lote já processado.
- * Teste 36 - rejeita lote aberto sem itens pendentes.
- * Teste 37 - rejeita lote inexistente.
- * Teste 38 - rejeita responsabilidade funcional duplicada.
- * Teste 39 - permite papéis diferentes para o mesmo usuário e ordem.
- * Teste 40 - permite combinações diferentes de ordem, usuário ou papel.
- * Teste 41 - mantém um único vínculo após tentativas repetidas.
+ * Teste 16 - ativa um draft e atribui os dois papéis ao mesmo usuário.
+ * Teste 17 - atribui supervisor e executor a usuários diferentes.
+ * Teste 18 - rejeita valor estimado negativo na ativação do draft.
+ * Teste 19 - libera ordem válida e movimenta estoque.
+ * Teste 20 - rejeita estoque duplicado para material e depósito.
+ * Teste 21 - considera o consumo acumulado de reservas do mesmo estoque.
+ * Teste 22 - rejeita liberação de ordem inexistente.
+ * Teste 23 - rejeita liberação de ordem não aberta.
+ * Teste 24 - rejeita liberação sem reservas.
+ * Teste 25 - reverte liberação individual sem estoque.
+ * Teste 26 - rejeita liberação sem acesso.
+ * Teste 27 - rejeita cancelamento sem acesso.
+ * Teste 28 - exige motivo no cancelamento.
+ * Teste 29 - cancela ordem e resolve o texto do status.
+ * Teste 30 - rejeita cancelamento de ordem não aberta.
+ * Teste 31 - rejeita cancelamento de ordem inexistente.
+ * Teste 32 - processa lote integralmente válido.
+ * Teste 33 - continua lote após falha funcional de um item.
+ * Teste 34 - usa o status contratual para lote com erro.
+ * Teste 35 - mantém atomicidade do item que falha no lote.
+ * Teste 36 - rejeita lote já processado.
+ * Teste 37 - rejeita lote aberto sem itens pendentes.
+ * Teste 38 - rejeita lote inexistente.
+ * Teste 39 - rejeita responsabilidade funcional duplicada.
+ * Teste 40 - permite papéis diferentes para o mesmo usuário e ordem.
+ * Teste 41 - permite combinações diferentes de ordem, usuário ou papel.
+ * Teste 42 - mantém um único vínculo após tentativas repetidas.
+ * Teste 43 - reverte responsabilidades quando a ativação falha.
+ * Teste 44 - rejeita ativação quando o responsável não está cadastrado.
  */
 
 const cds = require("@sap/cds");
@@ -108,6 +111,9 @@ const IDS = Object.freeze({
   draftOtherPatch: "d8000000-0000-4000-a000-000000000008",
   draftOtherActivation: "d9000000-0000-4000-a000-000000000009",
   draftOtherDiscard: "da000000-0000-4000-a000-00000000000a",
+  draftDifferentResponsible: "db000000-0000-4000-a000-00000000000b",
+  draftRollback: "dc000000-0000-4000-a000-00000000000c",
+  draftInvalidResponsible: "dd000000-0000-4000-a000-00000000000d",
   lotSuccess: "a8000000-0000-4000-a000-000000000001",
   lotMixed: "a8000000-0000-4000-a000-000000000002",
   lotPartial: "a8000000-0000-4000-a000-000000000003",
@@ -454,8 +460,8 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
   /**
    * Dado: um draft completo e válido pertencente ao usuário autenticado.
    * Quando: a action padrão `draftActivate` é executada.
-   * Então: nasce a entidade ativa e `IsActiveEntity` passa a ser `true`.
-   * Por quê: valida o ciclo principal de criação usado pelo Fiori elements.
+   * Então: nasce a entidade ativa e o criador recebe SUPERVISOR e EXECUTOR.
+   * Por quê: o mesmo usuário pode criar e ser responsável pela ordem.
    */
   it("ativa um draft válido", async () => {
     await POST(
@@ -473,6 +479,131 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     expect(status).to.equal(201);
     expect(data.ID).to.equal(IDS.draftValid);
     expect(data.IsActiveEntity).to.equal(true);
+
+    const responsabilidades = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where({ ordem_ID: IDS.draftValid });
+
+    expect(
+      responsabilidades
+        .map(({ usuario_matricula, papel }) =>
+          `${usuario_matricula}:${papel}`,
+        )
+        .sort(),
+    ).to.deep.equal([
+      `${USERS.authorized}:EXECUTOR`,
+      `${USERS.authorized}:SUPERVISOR`,
+    ]);
+  });
+
+  /**
+   * Dado: um usuário cria uma ordem e indica outra pessoa como responsável.
+   * Quando: o criador ativa o draft.
+   * Então: o criador recebe SUPERVISOR e o responsável recebe EXECUTOR.
+   * Por quê: os papéis representam responsabilidades funcionais distintas.
+   */
+  it("atribui supervisor e executor a usuários diferentes", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftDifferentResponsible, {
+        responsavel_matricula: USERS.other,
+      }),
+      AUTH.authorized,
+    );
+
+    const { status } = await POST(
+      `${orderUrl(IDS.draftDifferentResponsible, false)}/PlanejamentoService.draftActivate`,
+      {},
+      AUTH.authorized,
+    );
+    const responsabilidades = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where({ ordem_ID: IDS.draftDifferentResponsible });
+
+    expect(status).to.equal(201);
+    expect(
+      responsabilidades
+        .map(({ usuario_matricula, papel }) =>
+          `${usuario_matricula}:${papel}`,
+        )
+        .sort(),
+    ).to.deep.equal([
+      `${USERS.authorized}:SUPERVISOR`,
+      `${USERS.other}:EXECUTOR`,
+    ]);
+  });
+
+  /**
+   * Dado: um draft cujo responsável aponta para uma matrícula inexistente.
+   * Quando: o proprietário tenta ativar a ordem.
+   * Então: a API responde 400 sem criar ordem ativa nem responsabilidades.
+   * Por quê: os papéis automáticos só podem referenciar usuários cadastrados.
+   */
+  it("rejeita ativação com responsável não cadastrado", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftInvalidResponsible),
+      AUTH.authorized,
+    );
+    await db.run(
+      UPDATE("PlanejamentoService.Ordens.drafts")
+        .set({ responsavel_matricula: "TEST9999" })
+        .where({ ID: IDS.draftInvalidResponsible }),
+    );
+
+    await expectRequestError(
+      POST(
+        `${orderUrl(IDS.draftInvalidResponsible, false)}/PlanejamentoService.draftActivate`,
+        {},
+        AUTH.authorized,
+      ),
+      400,
+      "não está cadastrado",
+    );
+
+    const ordemAtiva = await SELECT.one
+      .from(entities.Ordens)
+      .where({ ID: IDS.draftInvalidResponsible });
+    const responsabilidades = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where({ ordem_ID: IDS.draftInvalidResponsible });
+
+    expect(ordemAtiva).to.equal(undefined);
+    expect(responsabilidades).to.have.length(0);
+  });
+
+  /**
+   * Dado: um draft novo cujo ID já foi ocupado por uma ordem ativa inconsistente.
+   * Quando: a ativação cria os papéis, mas falha ao inserir a ordem duplicada.
+   * Então: nenhuma responsabilidade automática permanece no banco.
+   * Por quê: ordem e responsabilidades devem participar da mesma transação.
+   */
+  it("reverte responsabilidades quando a ativação falha", async () => {
+    await POST(
+      `${SERVICE_URL}/Ordens`,
+      buildDraftPayload(IDS.draftRollback),
+      AUTH.authorized,
+    );
+    await db.run(
+      INSERT.into(entities.Ordens).entries(
+        buildOrder(IDS.draftRollback, "T-CONFLITO-ATIVACAO", USERS.authorized),
+      ),
+    );
+
+    await assert.rejects(
+      POST(
+        `${orderUrl(IDS.draftRollback, false)}/PlanejamentoService.draftActivate`,
+        {},
+        AUTH.authorized,
+      ),
+      (error) => Boolean(error.response),
+    );
+
+    const responsabilidades = await SELECT.from(
+      entities.ResponsabilidadesOrdem,
+    ).where({ ordem_ID: IDS.draftRollback });
+
+    expect(responsabilidades).to.have.length(0);
   });
 
   /**
@@ -735,7 +866,7 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
         AUTH.authorized,
       ),
       400,
-      "missing value",
+      ["Forneça o valor ausente", "missing value"],
     );
   });
 
@@ -1109,6 +1240,15 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       IDS.draftNegative,
       IDS.draftValid,
       IDS.draftNegativeActivation,
+      IDS.draftDifferentResponsible,
+      IDS.draftOwnerRead,
+      IDS.draftOtherRead,
+      IDS.draftAdminRead,
+      IDS.draftOtherPatch,
+      IDS.draftOtherActivation,
+      IDS.draftOtherDiscard,
+      IDS.draftRollback,
+      IDS.draftInvalidResponsible,
     ];
     const lotIds = [
       IDS.lotSuccess,
@@ -1118,6 +1258,11 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       IDS.lotNoPending,
     ];
 
+    await db.run(
+      DELETE.from("PlanejamentoService.Ordens.drafts").where({
+        ID: { in: orderIds },
+      }),
+    );
     await db.run(
       DELETE.from(entities.MovimentosEstoque).where({
         ordem_ID: { in: orderIds },
@@ -1480,7 +1625,16 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
         .filter(Boolean)
         .join(" ");
 
-      expect(returnedMessages).to.include(expectedMessage);
+      const mensagensEsperadas = Array.isArray(expectedMessage)
+        ? expectedMessage
+        : [expectedMessage];
+
+      expect(
+        mensagensEsperadas.some((mensagem) =>
+          returnedMessages.includes(mensagem),
+        ),
+        `Mensagem recebida: ${returnedMessages}`,
+      ).to.equal(true);
     }
   }
 

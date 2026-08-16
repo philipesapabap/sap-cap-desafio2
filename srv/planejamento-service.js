@@ -67,7 +67,10 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     // Rejeita imediatamente valores estimados fora do intervalo durante
     // a criação ou edição do draft, antes da tentativa de ativação.
     this.before(["CREATE", "UPDATE"], Ordens.drafts, this.validarValorEstimado);
-    this.before("SAVE", Ordens, this.validarOrdemAntesDeSalvar);
+    // SAVE em Ordens.drafts é executado somente durante a ativação do draft.
+    // Além das validações finais, cria os vínculos funcionais que tornam a nova
+    // ordem visível e operável após sua persistência.
+    this.before("SAVE", Ordens.drafts, this.prepararAtivacaoDaOrdem);
 
     this.on("liberarOrdem", Ordens, this.onliberarOrdem);
     this.on("cancelarOrdem", Ordens, this.oncancelarOrdem);
@@ -454,9 +457,96 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     }
   }
 
-  async validarOrdemAntesDeSalvar(req) {
+  async prepararAtivacaoDaOrdem(req) {
     await this.validarPeriodoDaOrdem(req);
     this.validarValorEstimado(req);
+    if (req.errors?.length) return;
+    await this.criarResponsabilidadesDaNovaOrdem(req);
+  }
+
+  /**
+   * Cria as responsabilidades funcionais durante a ativação de uma ordem nova.
+   *
+   * O criador registrado pelo CAP em DraftAdministrativeData recebe o papel
+   * SUPERVISOR. O usuário indicado em responsavel_matricula recebe EXECUTOR.
+   * Se ambos forem a mesma pessoa, os dois papéis são mantidos. Drafts de ordens
+   * já ativas não recriam vínculos. As inserções usam a transação da ativação;
+   * portanto, uma falha posterior também desfaz as responsabilidades.
+   *
+   * @param {import("@sap/cds").Request} req Requisição interna da ativação.
+   * @returns {Promise<void>}
+   */
+  async criarResponsabilidadesDaNovaOrdem(req) {
+    const { Ordens, ResponsabilidadesOrdem, Usuarios } = this.entities;
+    const ID = req.data?.ID;
+
+    if (!ID) return;
+
+    const draft = await SELECT.one
+      .from(Ordens.drafts)
+      .columns([
+        { ref: ["HasActiveEntity"] },
+        { ref: ["responsavel_matricula"] },
+        {
+          ref: ["DraftAdministrativeData"],
+          expand: [{ ref: ["CreatedByUser"] }],
+        },
+      ])
+      .where({ ID });
+
+    if (!draft) return req.reject(404, "DRAFT_NOT_EXISTING");
+    if (draft.HasActiveEntity) return;
+
+    const criador = draft.DraftAdministrativeData?.CreatedByUser;
+    const responsavel = draft.responsavel_matricula;
+    const matriculas = [...new Set([criador, responsavel].filter(Boolean))];
+
+    const usuarios = await SELECT.from(Usuarios)
+      .columns("matricula")
+      .where({ matricula: { in: matriculas } });
+    const matriculasExistentes = new Set(
+      usuarios.map(({ matricula }) => matricula),
+    );
+    const matriculaInvalida = matriculas.find(
+      (matricula) => !matriculasExistentes.has(matricula),
+    );
+
+    if (!criador || !responsavel || matriculaInvalida) {
+      return req.reject(400, "RESPONSIBILITY_USER_NOT_FOUND", {
+        user: matriculaInvalida || criador || responsavel || "",
+      });
+    }
+
+    const responsabilidadesDesejadas = [
+      { usuario_matricula: criador, papel: "SUPERVISOR" },
+      { usuario_matricula: responsavel, papel: "EXECUTOR" },
+    ];
+    const existentes = await SELECT.from(ResponsabilidadesOrdem)
+      .columns("usuario_matricula", "papel")
+      .where({
+        ordem_ID: ID,
+        usuario_matricula: { in: matriculas },
+        papel: { in: ["SUPERVISOR", "EXECUTOR"] },
+      });
+    const chavesExistentes = new Set(
+      existentes.map(
+        ({ usuario_matricula, papel }) => `${usuario_matricula}:${papel}`,
+      ),
+    );
+    const novasResponsabilidades = responsabilidadesDesejadas
+      .filter(
+        ({ usuario_matricula, papel }) =>
+          !chavesExistentes.has(`${usuario_matricula}:${papel}`),
+      )
+      .map((responsabilidade) => ({
+        ID: cds.utils.uuid(),
+        ordem_ID: ID,
+        ...responsabilidade,
+      }));
+
+    if (novasResponsabilidades.length) {
+      await INSERT.into(ResponsabilidadesOrdem).entries(novasResponsabilidades);
+    }
   }
 
   /**
