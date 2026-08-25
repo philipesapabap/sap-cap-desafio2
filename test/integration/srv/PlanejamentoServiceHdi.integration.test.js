@@ -32,6 +32,7 @@ const describeIntegration = RUN ? describe : describe.skip;
 const SERVICE_URL = "/planejamento";
 const AUTH = Object.freeze({
   admin: { auth: { username: "admin", password: "admin" } },
+  authorized: { auth: { username: "100001", password: "dev" } },
 });
 const IDS = Object.freeze({
   center: "c9000000-0000-4000-a000-000000000001",
@@ -178,7 +179,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
       POST(
         actionUrl("Ordens", IDS.repeatedStock, "liberarOrdem"),
         {},
-        AUTH.admin,
+        AUTH.authorized,
       ),
       409,
       "Estoque insuficiente",
@@ -216,8 +217,16 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     ]);
 
     const results = await Promise.allSettled([
-      POST(actionUrl("Ordens", IDS.sameOrder, "liberarOrdem"), {}, AUTH.admin),
-      POST(actionUrl("Ordens", IDS.sameOrder, "liberarOrdem"), {}, AUTH.admin),
+      POST(
+        actionUrl("Ordens", IDS.sameOrder, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
+      POST(
+        actionUrl("Ordens", IDS.sameOrder, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
     ]);
     const stock = await SELECT.one.from(entities.Estoques, IDS.stockA);
     const order = await SELECT.one.from(entities.Ordens, IDS.sameOrder);
@@ -258,8 +267,16 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     ]);
 
     const results = await Promise.allSettled([
-      POST(actionUrl("Ordens", IDS.competingA, "liberarOrdem"), {}, AUTH.admin),
-      POST(actionUrl("Ordens", IDS.competingB, "liberarOrdem"), {}, AUTH.admin),
+      POST(
+        actionUrl("Ordens", IDS.competingA, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
+      POST(
+        actionUrl("Ordens", IDS.competingB, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
     ]);
     const stock = await SELECT.one.from(entities.Estoques, IDS.stockA);
     const orders = await SELECT.from(entities.Ordens)
@@ -320,8 +337,16 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     ]);
 
     const results = await Promise.allSettled([
-      POST(actionUrl("Ordens", IDS.inverseA, "liberarOrdem"), {}, AUTH.admin),
-      POST(actionUrl("Ordens", IDS.inverseB, "liberarOrdem"), {}, AUTH.admin),
+      POST(
+        actionUrl("Ordens", IDS.inverseA, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
+      POST(
+        actionUrl("Ordens", IDS.inverseB, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
     ]);
     const stockA = await SELECT.one.from(entities.Estoques, IDS.stockA);
     const stockB = await SELECT.one.from(entities.Estoques, IDS.stockB);
@@ -365,7 +390,11 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     ]);
 
     await expectRequestError(
-      POST(actionUrl("Ordens", IDS.rollback, "liberarOrdem"), {}, AUTH.admin),
+      POST(
+        actionUrl("Ordens", IDS.rollback, "liberarOrdem"),
+        {},
+        AUTH.authorized,
+      ),
       409,
       "Estoque insuficiente",
     );
@@ -414,7 +443,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     await POST(
       actionUrl("LotesLiberacao", IDS.lotPartial, "processarLote"),
       {},
-      AUTH.admin,
+      AUTH.authorized,
     );
 
     const stockA = await SELECT.one.from(entities.Estoques, IDS.stockA);
@@ -470,15 +499,23 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
    */
   it("resolve o domínio do status após cancelar uma ordem", async () => {
     await insertOrders([buildOrder(IDS.cancel, "HDI-CANCELAR")]);
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries({
+        ID: cds.utils.uuid(),
+        ordem_ID: IDS.cancel,
+        usuario_matricula: "100001",
+        papel: "SUPERVISOR",
+      }),
+    );
 
     const action = await POST(
       actionUrl("Ordens", IDS.cancel, "cancelarOrdem"),
       { motivo: "Validação HDI" },
-      AUTH.admin,
+      AUTH.authorized,
     );
     const read = await GET(
       `${orderUrl(IDS.cancel)}?$select=status_code&$expand=status`,
-      AUTH.admin,
+      AUTH.authorized,
     );
 
     expect(action.status).to.equal(200);
@@ -512,7 +549,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     const { data, status } = await POST(
       actionUrl("LotesLiberacao", IDS.lotError, "processarLote"),
       {},
-      AUTH.admin,
+      AUTH.authorized,
     );
 
     expect(status).to.equal(200);
@@ -526,7 +563,7 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
    * Por quê: IDs diferentes não podem multiplicar permissões equivalentes no HANA.
    */
   it("rejeita responsabilidade funcional duplicada no HANA", async () => {
-    await insertOrders(buildOrder(IDS.sameOrder, "HDI-RESP"));
+    await insertOrders(buildOrder(IDS.sameOrder, "HDI-RESP"), false);
     const responsabilidade = {
       ordem_ID: IDS.sameOrder,
       usuario_matricula: "100001",
@@ -595,8 +632,22 @@ describeIntegration("PlanejamentoService — integração com HANA/HDI", () => {
     );
   }
 
-  async function insertOrders(entries) {
-    await db.run(INSERT.into(entities.Ordens).entries(entries));
+  async function insertOrders(entries, criarAcessos = true) {
+    const ordens = Array.isArray(entries) ? entries : [entries];
+
+    await db.run(INSERT.into(entities.Ordens).entries(ordens));
+
+    if (criarAcessos)
+      await db.run(
+        INSERT.into(entities.ResponsabilidadesOrdem).entries(
+          ordens.map(({ ID }) => ({
+            ID: cds.utils.uuid(),
+            ordem_ID: ID,
+            usuario_matricula: "100001",
+            papel: "EXECUTOR",
+          })),
+        ),
+      );
   }
 
   async function insertReservations(entries) {

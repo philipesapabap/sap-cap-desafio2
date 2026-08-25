@@ -2,7 +2,7 @@
 
 **Severidade:** 🟥 Alta
 
-**Status:** 🟠 Parcialmente resolvido
+**Status:** 🟢 Resolvido
 
 ## Base
 
@@ -33,4 +33,18 @@ Depois da implementação, validar o fluxo completo com usuário comum, outro us
 
 ## Impacto
 
-O usuário comum voltou a acessar o draft que criou, mas a nova ordem ativa ainda pode ficar invisível para ele por não possuir uma responsabilidade associada. O risco residual foi transferido para a Change Request do Desafio 3.
+O risco original foi eliminado: o proprietário acessa e ativa o próprio draft, e
+a nova ordem ativa permanece visível porque as responsabilidades iniciais são
+criadas atomicamente durante a ativação.
+
+## Resolução
+
+- Drafts novos são autorizados por `DraftAdministrativeData.CreatedByUser`, sem
+  conceder ao administrador a propriedade de drafts de outros usuários.
+- A ativação cria `SUPERVISOR` para o criador e `EXECUTOR` para o responsável
+  principal dentro da mesma transação.
+- Criador e responsável conseguem consultar a ordem ativa imediatamente após a
+  ativação por meio de `V_AcessosOrdem`.
+- Falhas posteriores na ativação revertem também as responsabilidades criadas.
+- A suíte HTTP/SQLite passou com 51/51 cenários e a jornada Fiori de Ordens com
+  48/48 asserções.

@@ -581,124 +581,56 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
   }
 
   /**
-   * Executa a regra transacional de liberação de uma ordem.
+   * Libera uma ordem de forma atômica.
    *
-   * Valida ordem, reservas e estoques; movimenta as quantidades,
-   * registra o histórico de estoque e altera o status para LIBERADA.
-   * Não rejeita diretamente uma requisição CAP, pois a rotina também
-   * é reutilizada pelo processamento em lote.
+   * Valida autorização, estado da ordem e disponibilidade de estoque.
+   * Os estoques são bloqueados em ordem determinística e somente são
+   * alterados após todas as reservas serem validadas.
    *
-   * @param {string} ID Identificador UUID da ordem.
-   * @param {cds.Request} req Requisição usada para identificar e autorizar o usuário.
+   * @param {string} ID UUID da ordem.
+   * @param {cds.Request} req Requisição CAP usada na autorização.
    * @returns {Promise<void>}
-   * @throws {ErroDeNegocio} Quando uma regra funcional impede a liberação.
-   * @throws {Error} Quando ocorre uma falha inesperada de infraestrutura.
-   * Throws interrompe imediatamente a execução atual e lança um erro
-   * o JS procura um catch capaz de tratar esse erro
-   * Para a liberação individual o catch é tratado no onliberarOrdem
-   * Para libeção via lote o catch é tratado no onProcessarLote
+   * @throws {ErroDeNegocio} Se uma regra de autorização ou liberação falhar.
    */
   async liberarOrdemPorID(ID, req) {
-    //Traz as entidades expostas pelo PlanejamentoService
-    //Tanto este, como o comando abaixo, buscam definições
-    //A diferença está onde vamos buscar
-    //Ordens e ReservasMateriais possuem exposições sendo feita pelo serviço(planejamento-service.cds)
-    //Por isso o uso do this, poque este serviço, na pasta .cds, expões as entidades
-    //O que não acontece com Estoques e MovimentosEstoque
-    //Ambas as declarações poderiam retirar as definições(usar a referência) vinda de cds.entites()
-    //Contudo, a diferença é que a entidade declarada no serviço(planejamento-service.cds)
-    //pode ter caracteristicas/definições adicionais.
-    //Caracteristicas essas não previstas nem possíveis na camada de persitência(schema.cds)
-    //Por exemplo, campos virtuais, como o usado na entidade Ordens, eles são definidos/declarados na
-    //camada de serviço e não na de persistência.
-    //Poderiamos expor Estoques e MovimentosEstoque na camada de serviço? Sim!
-    //Mas então possívelmente seriam acessíveis pela API e talvez não fosse desejado.
-    //Estoques e MovimentosEstoque são detalhes internos da regra de liberação.
-    //Portanto acessá-las pelo modelo de domínio permite usá-las internamente sem necessariamente
-    //expô-las aos clientes.
+    // Usa as projeções do serviço(srv) para ordens e reservas.
     const { Ordens, ReservasMateriais } = this.entities;
-    //Como funciona tecnicamente a declaração abaixo?
-    //Primeiro o CAP procura as entidades declaradas dentro do namespace desafio.ordens
-    //Depois o JS retira duas dessas entidades e cria variáveis com os mesmos nomes.
-    // Ou seja:
-    // Primeniro a parte do CAP -> O cds.entities pede ao CAP:
-    // "Entregue as definições das entidades que pertencem ao namespace desafio.ordens"
-    // OBS: Essas definições representama a ESTRUTURA das entidades.
-    // Elas não são os registros armazenados no banco.
-    // Segundo a parte do JS -> const { Est, Movi} aplica o conceito de desestruturação de objeto.
-    /*  Sem a desestruturação seria algo como:
-     *
-     *    const entidades = cds.entities("desafio.ordens");
-     *    const Estoques = entidades.Estoques;
-     *    const MovimentosEstoque = entidades.MovimentosEstoque;
-     */
-    //        PARA QUE SERVEM AS VARIÁVEIS CRIADAS?
-    //Para que quando precisarmos fazer consultas ou alterações no banco,
-    //o CAP tenha a referência(como um mapa ou a planta de uma casa)
-    //Então quando dizemos: const estoque = await SELECT.one.from(Estoques).where({ ID });
-    //Estamos dizendo: Usa essa planta(Estoques) como referência(que é do tipo entidades.Estoques)
-    //e efetivamente busca um registro no banco
+    // Estoques e movimentos são entidades internas, não expostas pelo serviço(srv).
+    // Logo, usamos a entidade original definida no namespace do modelo de domínio(db).
     const { Estoques, MovimentosEstoque } = cds.entities("desafio.ordens");
-    /*
-    Em resumo:
 
-        this.entities
-        -> Quero a entidade conforme ela foi exposta e configurada neste serviço(srv).
-        cds.entities("desafio.ordens")
-        -> Quero a entidade original definida no namespace do modelo de domínio(db).
-
-    */
-
-    //Busca e bloqueia a ordem
-    //O forUpdate() solicita um bloqueio exclusivo sobre os registros encontrados.
-    //Ou seja, o forUpdate não realiza uma "nova consulta", apenas "modifica" o Select para que
-    //a consulta seja realiza com bloqueio
-    //O select Lê e Bloqueia. Isso é importante porque não existe GAP ou intervalo desprotegido
-    //entre Ler e Bloquear. Isso protege, nesse contexto,
-    //  contra liberação(e tudo que envolve essa liberacao) duplicada da ordem
-    //O bloqueio dura até o encessamento da transação que o adquiriu(Depois do Commit/Rollback)
+    // Impede liberações concorrentes da mesma ordem até o fim da transação.
     const ordem = await SELECT.one.from(Ordens).where({ ID }).forUpdate();
 
-    //Se não existir, encerra a requisição com HTTP 404
     if (!ordem) throw new ErroDeNegocio(404, "ORDER_NOT_FOUND");
 
     /*
-     * Valida a autorização dentro da própria regra de negócio.
+     * O filtro aplicado no READ não protege chamadas diretas à action.
+     * Por isso, a liberação exige uma responsabilidade EXECUTOR antes
+     * de qualquer validação funcional ou alteração de estoque.
      *
-     * O filtro aplicado no READ protege somente as consultas. Uma action pode
-     * ser chamada diretamente pelo endpoint usando o UUID da ordem. Por isso,
-     * a autorização precisa ser repetida antes de qualquer validação funcional
-     * ou alteração de estoque.
-     *
-     * O administrador possui acesso global. Os demais usuários precisam ter
-     * uma entrada correspondente na view V_AcessosOrdem.
+     * O acesso administrativo à leitura não substitui o papel funcional.
      */
-    if (!req.user?.is("admin")) {
-      const acesso = await SELECT.one
-        .from("desafio.ordens.V_AcessosOrdem")
-        .where({
-          ordem_ID: ID,
-          matricula: req.user.id,
-        });
+    const acesso = await SELECT.one
+      .from("desafio.ordens.V_AcessosOrdem")
+      .where({
+        ordem_ID: ID,
+        matricula: req.user.id,
+        papel: "EXECUTOR",
+      });
 
-      if (!acesso)
-        throw new ErroDeNegocio(403, "ORDER_ACCESS_DENIED", {
-          code: ordem.codigo,
-        });
-    }
+    if (!acesso)
+      throw new ErroDeNegocio(403, "ORDER_ACCESS_DENIED", {
+        code: ordem.codigo,
+      });
 
-    // Somente um usuário autorizado pode conhecer e validar o estado da ordem.
-
-    //Se a ordem não estiver "aberta" a liberação é interrompida
     if (ordem.status_code !== "ABERTA")
       throw new ErroDeNegocio(409, "ORDER_NOT_OPEN", { code: ordem.codigo });
 
-    //Busca as reservas da ordem
     const reservas = await SELECT.from(ReservasMateriais).where({
       ordem_ID: ID,
     });
 
-    //Se não houver reserva a liberação é interrompida
     if (!reservas.length)
       throw new ErroDeNegocio(409, "ORDER_WITHOUT_RESERVATIONS", {
         code: ordem.codigo,
@@ -711,14 +643,17 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
      * repetidamente o mesmo registro quando duas reservas usam a mesma
      * combinação de material e depósito.
      */
-    const alvosPorChave = new Map();
+    const estoquesRequeridosPorChave = new Map();
 
     for (const reserva of reservas) {
-      const chave = JSON.stringify([reserva.material_ID, reserva.deposito_ID]);
+      const chaveEstoque = JSON.stringify([
+        reserva.material_ID,
+        reserva.deposito_ID,
+      ]);
 
-      if (!alvosPorChave.has(chave)) {
-        alvosPorChave.set(chave, {
-          chave,
+      if (!estoquesRequeridosPorChave.has(chaveEstoque)) {
+        estoquesRequeridosPorChave.set(chaveEstoque, {
+          chaveEstoque,
           material_ID: reserva.material_ID,
           deposito_ID: reserva.deposito_ID,
         });
@@ -726,11 +661,13 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     }
 
     /*
-     * Todas as ordens adquirem os bloqueios na mesma sequência. Isso reduz
-     * o risco de deadlock quando ordens concorrentes usam vários estoques.
-     * A ordenação afeta somente os alvos técnicos, não as reservas.
+     * Define uma sequência única para bloquear os estoques.
+     * Assim, liberações concorrentes não tentam bloquear os mesmos estoques
+     * em ordens diferentes, reduzindo o risco de deadlock.
      */
-    const alvosOrdenados = [...alvosPorChave.values()].sort((a, b) => {
+    const estoquesRequeridosOrdenados = [
+      ...estoquesRequeridosPorChave.values(),
+    ].sort((a, b) => {
       const comparacaoMaterial = a.material_ID.localeCompare(b.material_ID);
 
       return comparacaoMaterial !== 0
@@ -739,21 +676,21 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     });
 
     /*
-     * Fase 2 — bloquear todos os estoques antes de validar ou alterar dados.
+     * Fase 2 — bloquear os estoques antes de validar sua disponibilidade.
      * Os bloqueios permanecem ativos até o commit ou rollback da requisição.
      */
     const estoquesBloqueados = new Map();
 
-    for (const alvo of alvosOrdenados) {
+    for (const estoqueRequerido of estoquesRequeridosOrdenados) {
       const estoque = await SELECT.one
         .from(Estoques)
         .where({
-          material_ID: alvo.material_ID,
-          deposito_ID: alvo.deposito_ID,
+          material_ID: estoqueRequerido.material_ID,
+          deposito_ID: estoqueRequerido.deposito_ID,
         })
         .forUpdate();
 
-      estoquesBloqueados.set(alvo.chave, {
+      estoquesBloqueados.set(estoqueRequerido.chaveEstoque, {
         estoque,
         quantidadeDisponivelProjetada: estoque
           ? Number(estoque.quantidadeDisponivel)
@@ -771,8 +708,11 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
      * seguinte.
      */
     for (const reserva of reservas) {
-      const chave = JSON.stringify([reserva.material_ID, reserva.deposito_ID]);
-      const controle = estoquesBloqueados.get(chave);
+      const chaveEstoque = JSON.stringify([
+        reserva.material_ID,
+        reserva.deposito_ID,
+      ]);
+      const controle = estoquesBloqueados.get(chaveEstoque);
       const quantidadeNecessaria = Number(reserva.quantidadeNecessaria);
 
       if (
@@ -847,25 +787,24 @@ module.exports = class PlanejamentoService extends cds.ApplicationService {
     }
 
     /*
-     * Protege a action de cancelamento contra chamadas diretas.
+     * O filtro aplicado no READ não protege chamadas diretas à action.
+     * Por isso, o cancelamento exige uma responsabilidade SUPERVISOR
+     * antes de validar o estado ou alterar a ordem.
      *
-     * O fato de uma ordem não aparecer na listagem do usuário não impede que
-     * o endpoint da action seja chamado diretamente. Antes de verificar o
-     * status ou atualizar a ordem, confirmamos o acesso funcional do usuário.
+     * O acesso administrativo à leitura não substitui o papel funcional.
      */
-    if (!req.user?.is("admin")) {
-      const acesso = await SELECT.one
-        .from("desafio.ordens.V_AcessosOrdem")
-        .where({
-          ordem_ID: ID,
-          matricula: req.user.id,
-        });
+    const acesso = await SELECT.one
+      .from("desafio.ordens.V_AcessosOrdem")
+      .where({
+        ordem_ID: ID,
+        matricula: req.user.id,
+        papel: "SUPERVISOR",
+      });
 
-      if (!acesso)
-        return req.reject(403, "ORDER_ACCESS_DENIED", {
-          code: ordem.codigo,
-        });
-    }
+    if (!acesso)
+      return req.reject(403, "ORDER_ACCESS_DENIED", {
+        code: ordem.codigo,
+      });
 
     // Somente ordens abertas podem ser canceladas.
     //Se a ordem não estiver "aberta" a liberação é interrompida

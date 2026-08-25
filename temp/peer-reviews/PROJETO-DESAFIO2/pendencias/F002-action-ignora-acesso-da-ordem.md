@@ -51,6 +51,8 @@ Usuários autenticados podem liberar ordens alheias e alterar estoque sem autori
 **Status:** 🟢 Resolvido
 
 - A validação de `V_AcessosOrdem` foi adicionada a `liberarOrdemPorID` e `cancelarOrdemPorID`.
-- O perfil `admin` mantém o acesso global previsto.
+- A liberação exige `EXECUTOR` e o cancelamento exige `SUPERVISOR`, inclusive
+  quando o usuário possui o perfil `admin`.
 - A verificação ocorre antes das validações funcionais e das mutações da ordem.
-- Os testes HTTP `rejeita liberação sem acesso` e `rejeita cancelamento sem acesso` passaram.
+- A matriz HTTP cobre usuários sem acesso, papel insuficiente, administradores
+  com e sem o papel exigido e ausência de mutações nas respostas 403.

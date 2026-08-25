@@ -47,6 +47,13 @@
  * Teste 42 - mantém um único vínculo após tentativas repetidas.
  * Teste 43 - reverte responsabilidades quando a ativação falha.
  * Teste 44 - rejeita ativação quando o responsável não está cadastrado.
+ * Teste 45 - rejeita liberação para usuário que possui somente SUPERVISOR.
+ * Teste 46 - exige EXECUTOR do administrador para liberar.
+ * Teste 47 - permite ao administrador com EXECUTOR liberar.
+ * Teste 48 - rejeita cancelamento para usuário que possui somente EXECUTOR.
+ * Teste 49 - exige SUPERVISOR do administrador para cancelar.
+ * Teste 50 - permite ao administrador com SUPERVISOR cancelar.
+ * Teste 51 - registra erro no lote quando o usuário não é EXECUTOR da ordem.
  */
 
 const cds = require("@sap/cds");
@@ -58,6 +65,7 @@ const SERVICE_URL = "/planejamento";
 const USERS = Object.freeze({
   authorized: "TEST1001",
   other: "TEST1002",
+  admin: "admin",
 });
 const AUTH = Object.freeze({
   authorized: { auth: { username: USERS.authorized, password: "dev" } },
@@ -715,12 +723,21 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
         ),
       ]),
     );
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000004",
+          IDS.repeatedStock,
+          USERS.authorized,
+        ),
+      ),
+    );
 
     await expectRequestError(
       POST(
         actionUrl("Ordens", IDS.repeatedStock, "liberarOrdem"),
         {},
-        AUTH.admin,
+        AUTH.authorized,
       ),
       409,
       "Estoque insuficiente",
@@ -824,6 +841,67 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
       403,
       "autorização",
     );
+
+    const ordem = await SELECT.one.from(entities.Ordens, IDS.success);
+    const stockA = await SELECT.one.from(entities.Estoques, IDS.stockA);
+    const stockB = await SELECT.one.from(entities.Estoques, IDS.stockB);
+    const movimentos = await SELECT.from(entities.MovimentosEstoque).where({
+      ordem_ID: IDS.success,
+    });
+
+    expect(ordem.status_code).to.equal("ABERTA");
+    expect(Number(stockA.quantidadeDisponivel)).to.equal(10);
+    expect(Number(stockB.quantidadeDisponivel)).to.equal(5);
+    expect(movimentos).to.have.length(0);
+  });
+
+  it("rejeita liberação para usuário que possui somente SUPERVISOR", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000001",
+          IDS.success,
+          USERS.other,
+          "SUPERVISOR",
+        ),
+      ),
+    );
+
+    await expectRequestError(
+      POST(actionUrl("Ordens", IDS.success, "liberarOrdem"), {}, AUTH.other),
+      403,
+      "autorização",
+    );
+  });
+
+  it("exige EXECUTOR do administrador para liberar", async () => {
+    await expectRequestError(
+      POST(actionUrl("Ordens", IDS.success, "liberarOrdem"), {}, AUTH.admin),
+      403,
+      "autorização",
+    );
+  });
+
+  it("permite ao administrador com EXECUTOR liberar", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000002",
+          IDS.success,
+          USERS.admin,
+          "EXECUTOR",
+        ),
+      ),
+    );
+
+    const { data, status } = await POST(
+      actionUrl("Ordens", IDS.success, "liberarOrdem"),
+      {},
+      AUTH.admin,
+    );
+
+    expect(status).to.equal(200);
+    expect(data.status_code).to.equal("LIBERADA");
   });
 
   /**
@@ -852,6 +930,60 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     expect(ordem.observacao == null).to.equal(true);
   });
 
+  it("rejeita cancelamento para usuário que possui somente EXECUTOR", async () => {
+    await expectRequestError(
+      POST(
+        actionUrl("Ordens", IDS.risk, "cancelarOrdem"),
+        { motivo: "Papel insuficiente" },
+        AUTH.authorized,
+      ),
+      403,
+      "autorização",
+    );
+
+    const ordem = await SELECT.one
+      .from(entities.Ordens)
+      .columns("status_code", "observacao")
+      .where({ ID: IDS.risk });
+
+    expect(ordem.status_code).to.equal("ABERTA");
+    expect(ordem.observacao == null).to.equal(true);
+  });
+
+  it("exige SUPERVISOR do administrador para cancelar", async () => {
+    await expectRequestError(
+      POST(
+        actionUrl("Ordens", IDS.success, "cancelarOrdem"),
+        { motivo: "Sem papel funcional" },
+        AUTH.admin,
+      ),
+      403,
+      "autorização",
+    );
+  });
+
+  it("permite ao administrador com SUPERVISOR cancelar", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000003",
+          IDS.success,
+          USERS.admin,
+          "SUPERVISOR",
+        ),
+      ),
+    );
+
+    const { data, status } = await POST(
+      actionUrl("Ordens", IDS.success, "cancelarOrdem"),
+      { motivo: "Administrador responsável" },
+      AUTH.admin,
+    );
+
+    expect(status).to.equal(200);
+    expect(data.status_code).to.equal("CANCELADA");
+  });
+
   /**
    * Dado: uma ordem aberta e acessível.
    * Quando: `cancelarOrdem` é chamada sem o parâmetro obrigatório `motivo`.
@@ -877,6 +1009,17 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
    * Por quê: gravar apenas um código sem domínio deixa a UI sem descrição do estado.
    */
   it("cancela ordem e resolve o texto do status", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000005",
+          IDS.success,
+          USERS.authorized,
+          "SUPERVISOR",
+        ),
+      ),
+    );
+
     const action = await POST(
       actionUrl("Ordens", IDS.success, "cancelarOrdem"),
       { motivo: "Teste automatizado" },
@@ -906,6 +1049,17 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
    * Por quê: somente ordens abertas podem seguir para o estado cancelado.
    */
   it("rejeita cancelamento de ordem não aberta", async () => {
+    await db.run(
+      INSERT.into(entities.ResponsabilidadesOrdem).entries(
+        buildResponsibility(
+          "c8000000-0000-4000-a000-000000000006",
+          IDS.released,
+          USERS.authorized,
+          "SUPERVISOR",
+        ),
+      ),
+    );
+
     await expectRequestError(
       POST(
         actionUrl("Ordens", IDS.released, "cancelarOrdem"),
@@ -957,6 +1111,39 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     expect(
       items.every(({ status_code }) => status_code === "SUCESSO"),
     ).to.equal(true);
+  });
+
+  it("registra erro no lote quando o usuário não é EXECUTOR da ordem", async () => {
+    await db.run(
+      DELETE.from(entities.ResponsabilidadesOrdem).where({
+        ordem_ID: IDS.successSecond,
+        usuario_matricula: USERS.authorized,
+        papel: "EXECUTOR",
+      }),
+    );
+
+    const { data, status } = await POST(
+      actionUrl("LotesLiberacao", IDS.lotSuccess, "processarLote"),
+      {},
+      AUTH.authorized,
+    );
+    const itemSemPapel = await SELECT.one
+      .from(entities.ItensLoteLiberacao)
+      .where({ lote_ID: IDS.lotSuccess, ordem_ID: IDS.successSecond });
+    const ordemSemPapel = await SELECT.one.from(
+      entities.Ordens,
+      IDS.successSecond,
+    );
+    const movimentos = await SELECT.from(entities.MovimentosEstoque).where({
+      ordem_ID: IDS.successSecond,
+    });
+
+    expect(status).to.equal(200);
+    expect(data.status_code).to.equal("PROCESSADO_COM_ERRO");
+    expect(itemSemPapel.status_code).to.equal("ERRO");
+    expect(itemSemPapel.processado).to.equal(true);
+    expect(ordemSemPapel.status_code).to.equal("ABERTA");
+    expect(movimentos).to.have.length(0);
   });
 
   /**
@@ -1320,6 +1507,7 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
           ativo: true,
         },
         { matricula: USERS.other, nome: "Outro usuário", ativo: true },
+        { matricula: USERS.admin, nome: "Administrador", ativo: true },
       ]),
     );
     await db.run(
@@ -1572,8 +1760,13 @@ describe("PlanejamentoService — fluxos HTTP com SQLite", () => {
     };
   }
 
-  function buildResponsibility(ID, ordem_ID, usuario_matricula) {
-    return { ID, ordem_ID, usuario_matricula, papel: "EXECUTOR" };
+  function buildResponsibility(
+    ID,
+    ordem_ID,
+    usuario_matricula,
+    papel = "EXECUTOR",
+  ) {
+    return { ID, ordem_ID, usuario_matricula, papel };
   }
 
   function buildLot(ID, codigo, status_code = "ABERTO") {

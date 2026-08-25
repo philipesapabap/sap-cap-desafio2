@@ -3,7 +3,7 @@
 ## Correções bloqueantes
 
 - F001 a F009 e F011 foram resolvidos e validados.
-- F010 está parcialmente resolvido; a regra restante foi transferida pelo tutor para uma Change Request do Desafio 3.
+- F010 foi concluído pela CR-001, que cria as responsabilidades iniciais durante a ativação do draft novo.
 
 ## Especificação ainda não implementada
 
@@ -25,7 +25,7 @@
 
 - Pontos 1 a 6: estrutura principal presente.
 - Pontos 7 a 10: handlers presentes, com defeito no filtro composto, validação incompleta e bloqueio na ativação de draft novo.
-- Ponto 11: implementado, porém sem autorização dentro da action.
+- Ponto 11: concluído; as actions validam no backend o papel funcional exigido pela CR-001.
 - Ponto 12: implementado, porém com catálogo de status inconsistente.
 - Ponto 13: concluído após a resolução de F001, F005 e F011, com validações em SQLite, HANA/HDI e Fiori elements.
 - Pontos 14 a 18: parciais; debug, cenários negativos no `.http` e respostas conceituais faltam. Os testes automatizados de backend foram adicionados.
